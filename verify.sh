@@ -1,0 +1,148 @@
+#!/bin/bash
+#
+# verify.sh — Health check for IPv4↔IPv6 Gateway deployment
+#
+# Checks:
+#   - Service status (systemd / init.d)
+#   - Process presence
+#   - API /health and /status
+#   - Basic network (lan/wan or ip addr)
+#
+
+SERVICE_NAME="ipv4-ipv6-gateway"
+LOG_FILE="/var/log/${SERVICE_NAME}.log"
+INIT_SCRIPT="/etc/init.d/${SERVICE_NAME}"
+API_BASE="http://127.0.0.1:8080"
+
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+set -e
+
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}IPv4↔IPv6 Gateway Verification Script${NC}"
+echo -e "${GREEN}========================================${NC}\n"
+
+# Detect init system
+if command -v systemctl >/dev/null 2>&1; then
+    INIT_SYSTEM="systemd"
+else
+    INIT_SYSTEM="initd"
+fi
+echo -e "${BLUE}Detected init system: ${INIT_SYSTEM}${NC}\n"
+
+http_get() {
+    URL="$1"
+
+    if command -v curl >/dev/null 2>&1; then
+        if curl -sS "$URL" >/dev/null 2>&1; then
+            curl -s "$URL"
+            return 0
+        fi
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -qO- "$URL"
+        return 0
+    fi
+
+    echo "ERROR: neither working curl nor wget is available" >&2
+    return 1
+}
+
+# 1. Service status
+echo -e "${YELLOW}1) Service status${NC}"
+
+if [ "$INIT_SYSTEM" = "systemd" ] && command -v systemctl >/dev/null 2>&1; then
+    if systemctl list-units --type=service 2>/dev/null | grep -q "$SERVICE_NAME.service"; then
+        echo -e "${BLUE}- systemd status:${NC}"
+        systemctl is-active "$SERVICE_NAME" && \
+            echo -e "${GREEN}  -> Service is active (systemd)${NC}" || \
+            echo -e "${RED}  -> Service is NOT active (systemd)${NC}"
+        echo ""
+    else
+        echo -e "${YELLOW}  -> systemd unit not found for ${SERVICE_NAME}${NC}"
+    fi
+fi
+
+if [ -x "$INIT_SCRIPT" ]; then
+    echo -e "${BLUE}- init.d status:${NC}"
+    "$INIT_SCRIPT" status || true
+else
+    echo -e "${YELLOW}  -> /etc/init.d/${SERVICE_NAME} not found${NC}"
+fi
+echo ""
+
+# 2. Process check
+echo -e "${YELLOW}2) Process check${NC}"
+if pgrep -f "ipv4_ipv6_gateway.py" >/dev/null 2>&1; then
+    PIDS="$(pgrep -f "ipv4_ipv6_gateway.py" | tr '\n' ' ')"
+    echo -e "${GREEN}  -> ipv4_ipv6_gateway.py running (PID(s): ${PIDS})${NC}"
+else
+    echo -e "${RED}  -> ipv4_ipv6_gateway.py process NOT found${NC}"
+fi
+echo ""
+
+# 3. API health
+echo -e "${YELLOW}3) API health check${NC}"
+
+echo -e "${BLUE}- /health:${NC}"
+if OUTPUT=$(http_get "${API_BASE}/health" 2>/dev/null); then
+    echo "$OUTPUT" | python3 -m json.tool 2>/dev/null || echo "$OUTPUT"
+    echo -e "${GREEN}  -> /health responded${NC}"
+else
+    echo -e "${RED}  -> Failed to reach /health${NC}"
+fi
+echo ""
+
+echo -e "${BLUE}- /status (summary):${NC}"
+if OUTPUT=$(http_get "${API_BASE}/status" 2>/dev/null); then
+    RUNNING=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("running"))' 2>/dev/null || echo "?")
+    DEV_COUNT=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("device_count"))' 2>/dev/null || echo "?")
+    ACTIVE_COUNT=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("active_devices"))' 2>/dev/null || echo "?")
+    ETH0_UP=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("eth0_up"))' 2>/dev/null || echo "?")
+    ETH1_UP=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("eth1_up"))' 2>/dev/null || echo "?")
+
+    echo "  running       : ${RUNNING}"
+    echo "  device_count  : ${DEV_COUNT}"
+    echo "  active_devices: ${ACTIVE_COUNT}"
+    echo "  eth0_up       : ${ETH0_UP}"
+    echo "  eth1_up       : ${ETH1_UP}"
+    echo ""
+    echo -e "${GREEN}  -> /status responded${NC}"
+else
+    echo -e "${RED}  -> Failed to reach /status${NC}"
+fi
+echo ""
+
+# 4. Logs
+echo -e "${YELLOW}4) Log tail (${LOG_FILE})${NC}"
+if [ -f "$LOG_FILE" ]; then
+    echo -e "${BLUE}- Last 20 lines:${NC}"
+    tail -n 20 "$LOG_FILE" || true
+else
+    echo -e "${YELLOW}  -> Log file not found at ${LOG_FILE}${NC}"
+fi
+echo ""
+
+# 5. Network sanity
+echo -e "${YELLOW}5) Network sanity check${NC}"
+
+if command -v ifstatus >/dev/null 2>&1; then
+    echo -e "${BLUE}- ifstatus lan:${NC}"
+    ifstatus lan 2>/dev/null || echo "  (lan interface not defined)"
+    echo ""
+    echo -e "${BLUE}- ifstatus wan:${NC}"
+    ifstatus wan 2>/dev/null || echo "  (wan interface not defined)"
+else
+    echo -e "${BLUE}- ip -4 addr show:${NC}"
+    ip -4 addr show || true
+fi
+echo ""
+
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}Verification complete.${NC}"
+echo -e "${GREEN}========================================${NC}\n"

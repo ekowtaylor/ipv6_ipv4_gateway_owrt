@@ -161,8 +161,24 @@ EOF
 chmod +x /etc/init.d/$SERVICE_NAME
 echo -e "${GREEN}✓ Init.d script created${NC}\n"
 
-# Step 6: Configure network interfaces (sample UCI config)
-echo -e "${YELLOW}Step 6: Configuring network interfaces (sample)...${NC}"
+# Step 6: Backup current network config and create sample UCI config
+echo -e "${YELLOW}Step 6: Backing up network config and creating sample UCI config...${NC}"
+
+LIVE_NET_CFG="/etc/config/network"
+ORIG_NET_BACKUP="$CONFIG_DIR/network.original"
+
+if [ -f "$LIVE_NET_CFG" ]; then
+    # Only back up once so we don't overwrite the original baseline
+    if [ ! -f "$ORIG_NET_BACKUP" ]; then
+        cp "$LIVE_NET_CFG" "$ORIG_NET_BACKUP"
+        echo -e "${GREEN}✓ Backed up current /etc/config/network to $ORIG_NET_BACKUP${NC}"
+    else
+        echo -e "${YELLOW}⚠ Network backup already exists at $ORIG_NET_BACKUP, not overwriting${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ /etc/config/network not found, skipping backup${NC}"
+fi
+
 cat > "$CONFIG_DIR/network-config.uci" << 'EOF'
 package network
 
