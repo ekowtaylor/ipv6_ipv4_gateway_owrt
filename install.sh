@@ -262,23 +262,54 @@ URL="http://127.0.0.1:5050/status"
 
 http_get() {
     if command -v curl >/dev/null 2>&1; then
-        # Test curl is actually usable
-        if curl -sS "$1" >/dev/null 2>&1; then
-            curl -s "$1"
-            return 0
-        fi
+        curl -s "$1" 2>&1
+        return $?
     fi
 
     if command -v wget >/dev/null 2>&1; then
-        wget -qO- "$1"
-        return 0
+        wget -qO- "$1" 2>&1
+        return $?
     fi
 
-    echo "Error: neither working curl nor wget is available" >&2
+    echo "Error: neither curl nor wget is available" >&2
     return 1
 }
 
-http_get "$URL" | python3 -m json.tool
+# Get the response
+RESPONSE=$(http_get "$URL")
+EXIT_CODE=$?
+
+# Check if request succeeded
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "Error: Failed to connect to API server at $URL"
+    echo "Response: $RESPONSE"
+    echo ""
+    echo "Troubleshooting:"
+    echo "  1. Check if service is running: ps | grep ipv4_ipv6_gateway"
+    echo "  2. Check logs: tail -f /var/log/ipv4-ipv6-gateway.log"
+    echo "  3. Check port: netstat -tlnp | grep 5050"
+    exit 1
+fi
+
+# Check if response is empty
+if [ -z "$RESPONSE" ]; then
+    echo "Error: API returned empty response"
+    echo ""
+    echo "The API server may not be running. Check:"
+    echo "  /etc/init.d/ipv4-ipv6-gateway status"
+    exit 1
+fi
+
+# Try to parse as JSON
+echo "$RESPONSE" | python3 -m json.tool 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "Error: API returned non-JSON response:"
+    echo "$RESPONSE"
+    echo ""
+    echo "The API server may have encountered an error. Check:"
+    echo "  tail -50 /var/log/ipv4-ipv6-gateway.log"
+    exit 1
+fi
 EOF
 chmod +x /usr/bin/gateway-status
 
@@ -290,22 +321,47 @@ URL="http://127.0.0.1:5050/devices?status=${STATUS}"
 
 http_get() {
     if command -v curl >/dev/null 2>&1; then
-        if curl -sS "$1" >/dev/null 2>&1; then
-            curl -s "$1"
-            return 0
-        fi
+        curl -s "$1" 2>&1
+        return $?
     fi
 
     if command -v wget >/dev/null 2>&1; then
-        wget -qO- "$1"
-        return 0
+        wget -qO- "$1" 2>&1
+        return $?
     fi
 
-    echo "Error: neither working curl nor wget is available" >&2
+    echo "Error: neither curl nor wget is available" >&2
     return 1
 }
 
-http_get "$URL" | python3 -m json.tool
+# Get the response
+RESPONSE=$(http_get "$URL")
+EXIT_CODE=$?
+
+# Check if request succeeded
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "Error: Failed to connect to API server at $URL"
+    echo "Response: $RESPONSE"
+    echo ""
+    echo "Troubleshooting:"
+    echo "  1. Check if service is running: ps | grep ipv4_ipv6_gateway"
+    echo "  2. Check logs: tail -f /var/log/ipv4-ipv6-gateway.log"
+    exit 1
+fi
+
+# Check if response is empty
+if [ -z "$RESPONSE" ]; then
+    echo "Error: API returned empty response"
+    exit 1
+fi
+
+# Try to parse as JSON
+echo "$RESPONSE" | python3 -m json.tool 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "Error: API returned non-JSON response:"
+    echo "$RESPONSE"
+    exit 1
+fi
 EOF
 chmod +x /usr/bin/gateway-devices
 
