@@ -176,8 +176,11 @@ class ARPMonitor:
         self.logger = logging.getLogger("ARPMonitor")
         self.known_macs = set()
 
-    def get_arp_entries(self) -> List[str]:
-        """Get all MAC addresses in ARP table for this interface"""
+    def get_arp_entries(self) -> List[tuple]:
+        """
+        Get all MAC addresses and their IPv4 addresses in ARP table for this interface.
+        Returns list of (mac, ipv4) tuples.
+        """
         try:
             result = subprocess.run(
                 [cfg.CMD_ARP, "-i", self.interface, "-n"],
@@ -186,31 +189,49 @@ class ARPMonitor:
                 check=True,
             )
 
-            macs: List[str] = []
+            entries: List[tuple] = []
             for line in result.stdout.splitlines():
-                match = re.search(
-                    r"([0-9a-f]{2}:){5}([0-9a-f]{2})", line, re.IGNORECASE
-                )
-                if match:
-                    mac = match.group(0).lower()
-                    if mac not in {"ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"}:
-                        macs.append(mac)
+                # Match both MAC and IPv4 address
+                # Format: 192.168.1.100    ether   aa:bb:cc:dd:ee:ff   C     eth1
+                parts = line.split()
+                if len(parts) >= 3:
+                    # Try to extract IPv4 and MAC
+                    ipv4_match = re.match(
+                        r"^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$", parts[0]
+                    )
+                    mac_match = re.search(
+                        r"([0-9a-f]{2}:){5}([0-9a-f]{2})", line, re.IGNORECASE
+                    )
 
-            return list(set(macs))
+                    if ipv4_match and mac_match:
+                        ipv4 = ipv4_match.group(1)
+                        mac = mac_match.group(0).lower()
+
+                        # Filter out broadcast/invalid MACs
+                        if mac not in {"ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"}:
+                            entries.append((mac, ipv4))
+
+            return entries
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to get ARP entries: {e}")
             return []
 
-    def get_new_macs(self) -> List[str]:
-        """Get newly discovered MAC addresses since last call"""
-        current_macs = set(self.get_arp_entries())
-        new_macs = list(current_macs - self.known_macs)
+    def get_new_macs(self) -> List[tuple]:
+        """
+        Get newly discovered MAC addresses with their IPv4 addresses since last call.
+        Returns list of (mac, ipv4) tuples.
+        """
+        current_entries = self.get_arp_entries()
+        current_macs = {mac for mac, _ in current_entries}
+        new_entries = [
+            (mac, ipv4) for mac, ipv4 in current_entries if mac not in self.known_macs
+        ]
         self.known_macs = current_macs
 
-        if new_macs:
-            self.logger.info(f"Discovered new MACs: {new_macs}")
+        if new_entries:
+            self.logger.info(f"Discovered new devices: {new_entries}")
 
-        return new_macs
+        return new_entries
 
 
 class DHCPv6Manager:
@@ -225,6 +246,7 @@ class DHCPv6Manager:
     def request_ipv6_for_mac(self, mac: str) -> Optional[str]:
         """
         Spoof MAC on interface, request DHCPv6, return assigned IPv6 address.
+        Uses exponential backoff retry logic for reliability.
         """
         self.logger.info(f"Requesting IPv6 for MAC: {mac}")
 
@@ -239,20 +261,45 @@ class DHCPv6Manager:
 
             time.sleep(1)
 
-            if not self._request_dhcpv6():
-                self.logger.error(f"DHCPv6 request failed for MAC {mac}")
-                return None
+            # Retry with exponential backoff
+            for attempt in range(cfg.DHCPV6_RETRY_COUNT):
+                attempt_num = attempt + 1
+                self.logger.debug(
+                    f"DHCPv6 attempt {attempt_num}/{cfg.DHCPV6_RETRY_COUNT} for MAC {mac}"
+                )
 
-            time.sleep(2)
-            addresses = self.iface.get_ipv6_addresses()
+                if self._request_dhcpv6():
+                    time.sleep(2)
+                    addresses = self.iface.get_ipv6_addresses()
 
-            if addresses:
-                ipv6 = addresses[0]
-                self.logger.info(f"Successfully obtained IPv6 {ipv6} for MAC {mac}")
-                return ipv6
-            else:
-                self.logger.warning(f"No IPv6 address assigned for MAC {mac}")
-                return None
+                    if addresses:
+                        ipv6 = addresses[0]
+                        self.logger.info(
+                            f"Successfully obtained IPv6 {ipv6} for MAC {mac} "
+                            f"(attempt {attempt_num})"
+                        )
+                        return ipv6
+                    else:
+                        self.logger.warning(
+                            f"DHCPv6 succeeded but no IPv6 assigned for MAC {mac} "
+                            f"(attempt {attempt_num})"
+                        )
+                else:
+                    self.logger.warning(
+                        f"DHCPv6 request failed for MAC {mac} (attempt {attempt_num})"
+                    )
+
+                # Exponential backoff: wait longer after each failed attempt
+                if attempt < cfg.DHCPV6_RETRY_COUNT - 1:
+                    backoff_time = cfg.DHCPV6_RETRY_DELAY * (2**attempt)
+                    self.logger.debug(f"Waiting {backoff_time}s before retry...")
+                    time.sleep(backoff_time)
+
+            # All retries failed
+            self.logger.error(
+                f"All {cfg.DHCPV6_RETRY_COUNT} DHCPv6 attempts failed for MAC {mac}"
+            )
+            return None
 
         except Exception as e:
             self.logger.error(f"Exception during DHCPv6 request: {e}")
@@ -423,6 +470,83 @@ class GatewayService:
 
     # ---- Public API used by REST layer ----
 
+    def get_health(self) -> dict:
+        """Get detailed health metrics"""
+        import os
+        import time
+
+        # Try to import psutil for enhanced metrics (may not be available on OpenWrt)
+        try:
+            import psutil
+
+            has_psutil = True
+        except ImportError:
+            has_psutil = False
+
+        # Calculate uptime (if process start time is tracked)
+        uptime_seconds = 0
+        memory_usage_mb = 0.0
+
+        if has_psutil:
+            try:
+                process = psutil.Process(os.getpid())
+                uptime_seconds = int(time.time() - process.create_time())
+                process_memory = process.memory_info()
+                memory_usage_mb = process_memory.rss / (1024 * 1024)
+            except Exception:
+                pass
+
+        # Count threads
+        try:
+            thread_count = threading.active_count()
+        except Exception:
+            thread_count = 0
+
+        # Get last discovery time
+        last_discovery = "never"
+        with self._devices_lock:
+            if self.devices:
+                latest_device = max(
+                    self.devices.values(),
+                    key=lambda d: d.discovered_at or "",
+                    default=None,
+                )
+                if latest_device and latest_device.discovered_at:
+                    last_discovery = latest_device.discovered_at
+
+        return {
+            "status": "ok" if self.running else "stopped",
+            "running": self.running,
+            "uptime_seconds": uptime_seconds,
+            "memory_usage_mb": round(memory_usage_mb, 2),
+            "thread_count": thread_count,
+            "last_discovery": last_discovery,
+            "interfaces": {
+                "eth0": {
+                    "name": cfg.ETH0_INTERFACE,
+                    "up": self.eth0.is_up(),
+                    "description": "IPv6 side (network)",
+                },
+                "eth1": {
+                    "name": cfg.ETH1_INTERFACE,
+                    "up": self.eth1.is_up(),
+                    "description": "IPv4 side (devices)",
+                },
+            },
+            "device_stats": {
+                "total": len(self.devices),
+                "active": sum(1 for d in self.devices.values() if d.status == "active"),
+                "inactive": sum(
+                    1 for d in self.devices.values() if d.status == "inactive"
+                ),
+                "discovering": sum(
+                    1 for d in self.devices.values() if d.status == "discovering"
+                ),
+                "failed": sum(1 for d in self.devices.values() if d.status == "failed"),
+            },
+            "timestamp": datetime.now().isoformat(),
+        }
+
     def get_status(self) -> dict:
         """Get current gateway status"""
         with self._devices_lock:
@@ -555,11 +679,15 @@ class GatewayService:
 
         while self.running:
             try:
-                new_macs = self.arp_monitor.get_new_macs()
+                new_entries = self.arp_monitor.get_new_macs()
 
-                for mac in new_macs:
+                for mac, ipv4 in new_entries:
                     with self._devices_lock:
                         if mac in self.devices:
+                            # Update IPv4 if changed
+                            if self.devices[mac].ipv4_address != ipv4:
+                                self.devices[mac].ipv4_address = ipv4
+                                self.logger.info(f"Updated IPv4 for {mac}: {ipv4}")
                             continue
                         if len(self.devices) >= cfg.MAX_DEVICES:
                             self.logger.warning(
@@ -568,9 +696,9 @@ class GatewayService:
                                 mac,
                             )
                             continue
-                        device = DeviceMapping(mac_address=mac)
+                        device = DeviceMapping(mac_address=mac, ipv4_address=ipv4)
                         self.devices[mac] = device
-                    self.logger.info("New device discovered: %s", mac)
+                    self.logger.info("New device discovered: %s (IPv4: %s)", mac, ipv4)
 
                     thread = threading.Thread(
                         target=self._discover_ipv6_for_device,
@@ -624,12 +752,13 @@ class GatewayService:
 
         while self.running:
             try:
-                current_arp = set(self.arp_monitor.get_arp_entries())
+                current_arp_entries = self.arp_monitor.get_arp_entries()
+                current_macs = {mac for mac, _ in current_arp_entries}
                 now = datetime.now()
 
                 with self._devices_lock:
                     for mac, device in self.devices.items():
-                        if mac in current_arp:
+                        if mac in current_macs:
                             device.last_seen = now.isoformat()
                             if device.status == "pending":
                                 device.status = "active"

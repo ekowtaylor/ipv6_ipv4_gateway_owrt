@@ -6,11 +6,11 @@ Provides endpoints for monitoring, status, and device management
 
 import json
 import logging
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
-from typing import Optional, Dict, Any, List
 import threading
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger("GatewayAPI")
 
@@ -85,7 +85,7 @@ class GatewayAPIHandler(BaseHTTPRequestHandler):
 
             # Health check
             elif path == "/health":
-                self.send_json_response({"status": "ok"})
+                self.handle_health()
 
             # API info
             elif path == "/":
@@ -113,9 +113,7 @@ class GatewayAPIHandler(BaseHTTPRequestHandler):
                 try:
                     data = json.loads(body)
                 except json.JSONDecodeError:
-                    logger.warning(
-                        "Invalid JSON payload on %s: %r", path, body[:200]
-                    )
+                    logger.warning("Invalid JSON payload on %s: %r", path, body[:200])
                     self.send_error_response("Invalid JSON payload", 400)
                     return
 
@@ -151,7 +149,7 @@ class GatewayAPIHandler(BaseHTTPRequestHandler):
             "version": "1.0",
             "endpoints": {
                 "GET /": "This information",
-                "GET /health": "Health check",
+                "GET /health": "Health check with detailed metrics",
                 "GET /status": "Gateway status and statistics",
                 "GET /devices": "List all devices (supports ?status=active|inactive|all)",
                 "GET /devices/<mac>": "Get specific device details",
@@ -170,6 +168,15 @@ class GatewayAPIHandler(BaseHTTPRequestHandler):
         status = self.gateway_service.get_status()
         self.send_json_response(status)
 
+    def handle_health(self) -> None:
+        """GET /health - Health check with detailed metrics"""
+        if not self.gateway_service:
+            self.send_error_response("Gateway service not available", 503)
+            return
+
+        health = self.gateway_service.get_health()
+        self.send_json_response(health)
+
     def handle_devices(self, query_string: Dict[str, List[str]]) -> None:
         """GET /devices - List devices with optional filtering"""
         if not self.gateway_service:
@@ -183,7 +190,9 @@ class GatewayAPIHandler(BaseHTTPRequestHandler):
 
         # Filter by status (expects device.status to be a string like 'active'/'inactive')
         if status_filter != "all":
-            devices = [d for d in devices if getattr(d, "status", "").lower() == status_filter]
+            devices = [
+                d for d in devices if getattr(d, "status", "").lower() == status_filter
+            ]
 
         device_list = [d.to_dict() for d in devices]
 
@@ -263,7 +272,7 @@ class GatewayAPIHandler(BaseHTTPRequestHandler):
 class GatewayAPIServer:
     """API Server for gateway service"""
 
-    def __init__(self, gateway_service: Any, host: str = "127.0.0.1", port: int = 8080):
+    def __init__(self, gateway_service: Any, host: str = "127.0.0.1", port: int = 5050):
         self.gateway_service = gateway_service
         self.host = host
         self.port = port
@@ -306,7 +315,7 @@ def test_api_client() -> None:
     """Simple test client for the API"""
     import urllib.request
 
-    base_url = "http://127.0.0.1:8080"
+    base_url = "http://127.0.0.1:5050"
 
     try:
         # Test health

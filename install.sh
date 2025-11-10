@@ -229,7 +229,7 @@ echo -e "${YELLOW}Step 9: Creating helper scripts...${NC}"
 # Status script
 cat > /usr/bin/gateway-status << 'EOF'
 #!/bin/sh
-URL="http://127.0.0.1:8080/status"
+URL="http://127.0.0.1:5050/status"
 
 http_get() {
     if command -v curl >/dev/null 2>&1; then
@@ -257,7 +257,7 @@ chmod +x /usr/bin/gateway-status
 cat > /usr/bin/gateway-devices << 'EOF'
 #!/bin/sh
 STATUS="${1:-all}"
-URL="http://127.0.0.1:8080/devices?status=${STATUS}"
+URL="http://127.0.0.1:5050/devices?status=${STATUS}"
 
 http_get() {
     if command -v curl >/dev/null 2>&1; then
@@ -314,11 +314,11 @@ echo "5. View logs:"
 echo "   tail -f /var/log/ipv4-ipv6-gateway.log"
 echo ""
 echo -e "${YELLOW}API Endpoints:${NC}"
-echo "   http://localhost:8080                  # API info"
-echo "   http://localhost:8080/health           # Health check"
-echo "   http://localhost:8080/status           # Gateway status"
-echo "   http://localhost:8080/devices          # List devices"
-echo "   http://localhost:8080/devices/MAC      # Device details"
+echo "   http://localhost:5050                  # API info"
+echo "   http://localhost:5050/health           # Health check"
+echo "   http://localhost:5050/status           # Gateway status"
+echo "   http://localhost:5050/devices          # List devices"
+echo "   http://localhost:5050/devices/MAC      # Device details"
 echo ""
 echo -e "${GREEN}Installation Locations:${NC}"
 echo "   Service: $INSTALL_DIR"

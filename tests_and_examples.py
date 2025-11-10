@@ -3,14 +3,14 @@
 Tests and Example Usage for IPv4↔IPv6 Gateway Service
 """
 
-import unittest
 import json
-import time
-from unittest.mock import Mock, patch, MagicMock
-from pathlib import Path
-import tempfile
-import sys
 import os
+import sys
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
 
 # --- Import path setup -------------------------------------------------------
 
@@ -27,12 +27,12 @@ for root in CANDIDATE_ROOTS:
         break
 
 from ipv4_ipv6_gateway import (
-    DeviceMapping,
-    NetworkInterface,
     ARPMonitor,
-    DHCPv6Manager,
+    DeviceMapping,
     DeviceStore,
+    DHCPv6Manager,
     GatewayService,
+    NetworkInterface,
 )
 
 
@@ -169,9 +169,7 @@ class TestDeviceStore(unittest.TestCase):
         # Load
         loaded = store.load_devices()
         self.assertEqual(len(loaded), 1)
-        self.assertEqual(
-            loaded["aa:bb:cc:dd:ee:01"].mac_address, "aa:bb:cc:dd:ee:01"
-        )
+        self.assertEqual(loaded["aa:bb:cc:dd:ee:01"].mac_address, "aa:bb:cc:dd:ee:01")
 
     def test_add_device(self):
         """Test adding a device"""
@@ -238,7 +236,7 @@ class ExampleUsage:
         print("Example 1: Get Gateway Status")
         print("=" * 60)
 
-        url = "http://127.0.0.1:8080/status"
+        url = "http://127.0.0.1:5050/status"
 
         try:
             response = ExampleUsage._urlopen(url)
@@ -262,7 +260,7 @@ class ExampleUsage:
         print("Example 2: List All Devices")
         print("=" * 60)
 
-        url = "http://127.0.0.1:8080/devices"
+        url = "http://127.0.0.1:5050/devices"
 
         try:
             response = ExampleUsage._urlopen(url)
@@ -291,7 +289,7 @@ class ExampleUsage:
         print("Example 3: List Active Devices Only")
         print("=" * 60)
 
-        url = "http://127.0.0.1:8080/devices?status=active"
+        url = "http://127.0.0.1:5050/devices?status=active"
 
         try:
             response = ExampleUsage._urlopen(url)
@@ -317,7 +315,7 @@ class ExampleUsage:
         print("=" * 60)
 
         mac = "aa:bb:cc:dd:ee:01"
-        url = f"http://127.0.0.1:8080/devices/{mac}"
+        url = f"http://127.0.0.1:5050/devices/{mac}"
 
         try:
             response = ExampleUsage._urlopen(url)
@@ -335,7 +333,7 @@ class ExampleUsage:
         print("Example 5: Export All Devices")
         print("=" * 60)
 
-        url = "http://127.0.0.1:8080/admin/export"
+        url = "http://127.0.0.1:5050/admin/export"
 
         try:
             response = ExampleUsage._urlopen(url, method="POST")
@@ -416,7 +414,7 @@ def run_examples():
     print("\n" + "=" * 60)
     print("Example Usage - REST API Calls")
     print("=" * 60)
-    print("\nMake sure the gateway service is running on http://127.0.0.1:8080\n")
+    print("\nMake sure the gateway service is running on http://127.0.0.1:5050\n")
 
     examples = ExampleUsage()
 
@@ -434,9 +432,7 @@ def run_examples():
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Gateway Service Tests & Examples"
-    )
+    parser = argparse.ArgumentParser(description="Gateway Service Tests & Examples")
     parser.add_argument("--tests", action="store_true", help="Run unit tests")
     parser.add_argument("--examples", action="store_true", help="Run example usage")
     parser.add_argument("--all", action="store_true", help="Run all tests and examples")

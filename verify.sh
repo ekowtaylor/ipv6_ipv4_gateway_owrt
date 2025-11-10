@@ -12,7 +12,7 @@
 SERVICE_NAME="ipv4-ipv6-gateway"
 LOG_FILE="/var/log/${SERVICE_NAME}.log"
 INIT_SCRIPT="/etc/init.d/${SERVICE_NAME}"
-API_BASE="http://127.0.0.1:8080"
+API_BASE="http://127.0.0.1:5050"
 
 YELLOW='\033[1;33m'
 GREEN='\033[0;32m'

@@ -95,7 +95,7 @@ systemctl status ipv4-ipv6-gateway
 gateway-status
 
 # Should show running service and discovered devices
-# Plug in an IPv4 device to eth0
+# Plug in an IPv4 device to eth1
 # Watch logs for discovery
 tail -f /var/log/ipv4-ipv6-gateway.log
 
@@ -112,7 +112,7 @@ gateway-devices
 │  IPv4 Devices   │
 │  (any MAC)      │
 └────────┬────────┘
-         │ eth0 (IPv4)
+         │ eth1 (IPv4)
          │
     ┌────▼──────────────────────┐
     │  NanoPi R5C Router        │
@@ -129,12 +129,12 @@ gateway-devices
     │  │ (OpenWrt package)    │ │  Transparent to devices
     │  └──────────────────────┘ │
     │  ┌──────────────────────┐ │
-    │  │ REST API Server      │ │  Port 8080
+    │  │ REST API Server      │ │  Port 5050
     │  │ (Monitoring)         │ │  Status, devices, export
     │  └──────────────────────┘ │
     │                            │
-    └────┬──────────────────────┬┘
-         │ eth1 (IPv6)          │
+└────┬──────────────────────┬┘
+         │ eth0 (IPv6)          │
          │                      │
     ┌────▼────────────┐ ┌──────▼────┐
     │ IPv6 Network    │ │ IPv6 Admin │
@@ -163,7 +163,7 @@ gateway-devices
 /etc/init.d/
 └── ipv4-ipv6-gateway          # Init.d script
 
-/usr/local/bin/
+/usr/bin/
 ├── gateway-status             # Quick status helper
 └── gateway-devices            # List devices helper
 
@@ -179,11 +179,11 @@ gateway-devices
 
 ```bash
 # Health check
-curl http://localhost:8080/health
+curl http://localhost:5050/health
 # Response: {"status": "ok"}
 
 # Full gateway status
-curl http://localhost:8080/status
+curl http://localhost:5050/status
 # Response: {
 #   "running": true,
 #   "device_count": 5,
@@ -199,19 +199,19 @@ curl http://localhost:8080/status
 
 ```bash
 # List all devices
-curl http://localhost:8080/devices
+curl http://localhost:5050/devices
 
 # List only active devices
-curl http://localhost:8080/devices?status=active
+curl http://localhost:5050/devices?status=active
 
 # List inactive devices
-curl http://localhost:8080/devices?status=inactive
+curl http://localhost:5050/devices?status=inactive
 
 # Get specific device
-curl http://localhost:8080/devices/aa:bb:cc:dd:ee:01
+curl http://localhost:5050/devices/aa:bb:cc:dd:ee:01
 
 # Export all devices
-curl -X POST http://localhost:8080/admin/export
+curl -X POST http://localhost:5050/admin/export
 ```
 
 ### Helper Scripts
@@ -236,8 +236,8 @@ Edit `/opt/ipv4-ipv6-gateway/gateway_config.py`:
 
 ```python
 # Network interfaces
-ETH0_INTERFACE = 'eth0'  # IPv4 side
-ETH1_INTERFACE = 'eth1'  # IPv6 side
+ETH0_INTERFACE = 'eth0'  # IPv6 side (network)
+ETH1_INTERFACE = 'eth1'  # IPv4 side (devices)
 
 # DHCPv6 settings
 DHCPV6_TIMEOUT = 10      # seconds to wait for DHCPv6
@@ -247,10 +247,10 @@ DHCPV6_RETRY_COUNT = 3   # retry attempts
 ARP_MONITOR_INTERVAL = 10       # Check for new devices every 10s
 DEVICE_MONITOR_INTERVAL = 30    # Update status every 30s
 
-# API Server
+### API Server
 API_ENABLED = True
 API_HOST = '127.0.0.1'
-API_PORT = 8080
+API_PORT = 5050
 
 # Logging
 LOG_LEVEL = 'INFO'  # INFO, DEBUG, WARNING, ERROR
@@ -275,14 +275,14 @@ Edit network via UCI:
 # View current config
 uci show network
 
-# Edit eth0 (IPv4 side)
-uci set network.lan.ifname='eth0'
+# Edit eth1 (IPv4 side - LAN)
+uci set network.lan.ifname='eth1'
 uci set network.lan.proto='static'
 uci set network.lan.ipaddr='192.168.1.1'
 uci set network.lan.netmask='255.255.255.0'
 
-# Edit eth1 (IPv6 side)
-uci set network.wan.ifname='eth1'
+# Edit eth0 (IPv6 side - WAN)
+uci set network.wan.ifname='eth0'
 uci set network.wan.proto='dhcpv6'
 
 # Apply changes
@@ -356,8 +356,8 @@ python3 /opt/ipv4-ipv6-gateway/ipv4_ipv6_gateway.py
 # Check systemd logs
 journalctl -u ipv4-ipv6-gateway -n 50
 
-# Check if port 8080 is in use
-netstat -tlnp | grep 8080
+# Check if port 5050 is in use
+netstat -tlnp | grep 5050
 
 # Restart service
 systemctl restart ipv4-ipv6-gateway
@@ -366,12 +366,12 @@ systemctl restart ipv4-ipv6-gateway
 ### Devices Not Being Discovered
 
 ```bash
-# Check eth0 is up and has IP
-ifconfig eth0
-ip addr show eth0
+# Check eth1 is up and has IP
+ifconfig eth1
+ip addr show eth1
 
 # Check ARP table
-arp -i eth0 -n
+arp -i eth1 -n
 
 # Check logs for "discovered" messages
 tail -f /var/log/ipv4-ipv6-gateway.log | grep -i "discover\|new"
@@ -379,27 +379,27 @@ tail -f /var/log/ipv4-ipv6-gateway.log | grep -i "discover\|new"
 # Manually ping an IPv4 device to populate ARP
 ping 192.168.1.2
 # Then check again:
-arp -i eth0 -n
+arp -i eth1 -n
 ```
 
 ### IPv6 Not Being Requested
 
 ```bash
-# Check eth1 is up
-ifconfig eth1
-ip link show eth1
+# Check eth0 is up
+ifconfig eth0
+ip link show eth0
 
 # Check if odhcp6c is available
 which odhcp6c
 
 # Test DHCPv6 manually
-odhcp6c -P 0 eth1
+odhcp6c -P 0 eth0
 
-# Check IPv6 addresses on eth1
-ip -6 addr show eth1
+# Check IPv6 addresses on eth0
+ip -6 addr show eth0
 
 # Check API response
-curl http://localhost:8080/devices
+curl http://localhost:5050/devices
 # Look for devices with "discovering" status
 ```
 
@@ -407,15 +407,16 @@ curl http://localhost:8080/devices
 
 ```bash
 # Check if API server is running
-netstat -tlnp | grep 8080
+# Check if port 5050 is in use
+netstat -tlnp | grep 5050
 
 # Test connectivity
-curl -v http://127.0.0.1:8080/health
+curl -v http://127.0.0.1:5050/health
 
 # Check for API errors in logs
 tail -f /var/log/ipv4-ipv6-gateway.log | grep -i "api\|server"
 
-# Try different port if 8080 is blocked
+# Try different port if 5050 is blocked
 # Edit gateway_config.py and set API_PORT = 8888
 ```
 
@@ -467,7 +468,7 @@ For each NanoPi R5C unit being deployed:
 - [ ] Configure network interfaces
 - [ ] Start service
 - [ ] Verify service is running
-- [ ] Connect test device to eth0
+- [ ] Connect test device to eth1
 - [ ] Verify device discovered
 - [ ] Check API endpoints
 - [ ] Enable service to auto-start on boot
@@ -501,7 +502,7 @@ sysctl -p
 while true; do
     clear
     echo "Active Devices:"
-    curl -s http://localhost:8080/devices?status=active | python3 -m json.tool
+    curl -s http://localhost:5050/devices?status=active | python3 -m json.tool
     sleep 5
 done
 ```
@@ -510,7 +511,7 @@ done
 
 ```bash
 # Export all device mappings to JSON file
-curl -X POST http://localhost:8080/admin/export > devices_export.json
+curl -X POST http://localhost:5050/admin/export > devices_export.json
 
 # Import to documentation/database
 # Process with: jq '.devices | keys' devices_export.json
@@ -530,7 +531,7 @@ systemctl status ipv4-ipv6-gateway
 grep ERROR /var/log/ipv4-ipv6-gateway.log
 
 # Monthly: Export device list
-curl -X POST http://localhost:8080/admin/export > devices_$(date +%Y%m%d).json
+curl -X POST http://localhost:5050/admin/export > devices_$(date +%Y%m%d).json
 
 # Quarterly: Test after reboot
 reboot
@@ -563,7 +564,7 @@ Device mappings are automatically saved to:
 
 Export periodically:
 ```bash
-curl -X POST http://localhost:8080/admin/export > backup_$(date +%s).json
+curl -X POST http://localhost:5050/admin/export > backup_$(date +%s).json
 ```
 
 ---
@@ -606,7 +607,7 @@ def handle_custom(self):
 python3 ipv4_ipv6_gateway.py
 
 # Test API in another terminal
-curl http://localhost:8080/status
+curl http://localhost:5050/status
 ```
 
 ---
@@ -615,12 +616,12 @@ curl http://localhost:8080/status
 
 - **Logs:** `/var/log/ipv4-ipv6-gateway.log`
 - **Config:** `/etc/ipv4-ipv6-gateway/`
-- **API:** `http://localhost:8080/`
+- **API:** `http://localhost:5050/`
 - **Source:** `/opt/ipv4-ipv6-gateway/`
 
 For issues:
 1. Check logs: `tail -f /var/log/ipv4-ipv6-gateway.log`
-2. Check API: `curl http://localhost:8080/status`
+2. Check API: `curl http://localhost:5050/status`
 3. Verify network: `ifconfig`, `ip -6 addr show`
 4. Restart service: `systemctl restart ipv4-ipv6-gateway`
 
