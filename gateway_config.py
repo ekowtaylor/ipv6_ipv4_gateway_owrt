@@ -165,17 +165,29 @@ def validate_config() -> bool:
     CMD_IP6TABLES = _find_command(CMD_IP6TABLES)
     CMD_SYSCTL = _find_command(CMD_SYSCTL)
 
-    # Check required commands exist
-    commands = [
-        CMD_IP,
-        CMD_ARP,
-        CMD_ODHCP6C,
-        CMD_IPTABLES,
-        CMD_IP6TABLES,
-        CMD_SYSCTL,
-    ]
-    for cmd in commands:
-        if not os.path.exists(cmd):
-            raise RuntimeError(f"Required command not found: {cmd}")
+    # Check required commands exist and provide helpful error messages
+    commands = {
+        "ip": CMD_IP,
+        "arp": CMD_ARP,
+        "odhcp6c": CMD_ODHCP6C,
+        "iptables": CMD_IPTABLES,
+        "ip6tables": CMD_IP6TABLES,
+        "sysctl": CMD_SYSCTL,
+    }
+
+    missing_commands = []
+    for name, path in commands.items():
+        if not os.path.exists(path):
+            missing_commands.append(f"{name} (looked for: {path})")
+
+    if missing_commands:
+        error_msg = "Required command(s) not found:\n"
+        for cmd in missing_commands:
+            error_msg += f"  - {cmd}\n"
+        error_msg += "\nOn OpenWrt, install with:\n"
+        error_msg += "  opkg update\n"
+        error_msg += "  opkg install ip-full busybox odhcp6c iptables\n"
+        error_msg += "\nOr update paths in gateway_config.py to match your system."
+        raise RuntimeError(error_msg)
 
     return True
