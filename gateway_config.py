@@ -81,7 +81,7 @@ VALIDATE_IPV4_FORMAT = False  # Less critical for this use case
 
 # API Server (optional - for status/monitoring)
 API_ENABLED = True
-API_HOST = "127.0.0.1"
+API_HOST = "0.0.0.0"  # Bind to all interfaces (use "127.0.0.1" for localhost only)
 API_PORT = 5050
 API_LOG_REQUESTS = False
 
