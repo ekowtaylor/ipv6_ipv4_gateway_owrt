@@ -168,11 +168,15 @@ def validate_config() -> bool:
     # Check required commands exist and provide helpful error messages
     commands = {
         "ip": CMD_IP,
-        "arp": CMD_ARP,
         "odhcp6c": CMD_ODHCP6C,
         "iptables": CMD_IPTABLES,
         "ip6tables": CMD_IP6TABLES,
         "sysctl": CMD_SYSCTL,
+    }
+
+    # Note: 'arp' is optional since we can use 'ip neigh' as a fallback
+    optional_commands = {
+        "arp": CMD_ARP,
     }
 
     missing_commands = []
@@ -189,5 +193,11 @@ def validate_config() -> bool:
         error_msg += "  opkg install ip-full busybox odhcp6c iptables\n"
         error_msg += "\nOr update paths in gateway_config.py to match your system."
         raise RuntimeError(error_msg)
+
+    # Warn about optional commands
+    for name, path in optional_commands.items():
+        if not os.path.exists(path):
+            # Not an error, just log that fallback will be used
+            pass
 
     return True

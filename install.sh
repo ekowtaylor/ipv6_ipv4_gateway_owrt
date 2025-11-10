@@ -46,14 +46,43 @@ fi
 # Step 1: Install system dependencies (OpenWrt / opkg only)
 echo -e "${YELLOW}Step 1: Installing system dependencies (if opkg is available)...${NC}"
 if command -v opkg >/dev/null 2>&1; then
+    echo -e "${BLUE}Running opkg update...${NC}"
     opkg update || echo -e "${YELLOW}⚠ opkg update failed (no WAN or mirror issue). Continuing...${NC}"
-    opkg install python3 python3-light python3-logging 2>/dev/null || true
-    opkg install odhcp6c iptables ip6tables 2>/dev/null || true
-    opkg install 464xlat 2>/dev/null || true
+
+    echo -e "${BLUE}Installing core dependencies...${NC}"
+    # Core Python packages
+    opkg install python3 python3-light python3-logging 2>/dev/null || echo -e "${YELLOW}⚠ python3 packages may already be installed${NC}"
+
+    # Network tools (required)
+    opkg install ip-full 2>/dev/null || echo -e "${YELLOW}⚠ ip-full installation failed or already installed${NC}"
+    opkg install odhcp6c 2>/dev/null || echo -e "${YELLOW}⚠ odhcp6c installation failed or already installed${NC}"
+    opkg install iptables ip6tables 2>/dev/null || echo -e "${YELLOW}⚠ iptables installation failed or already installed${NC}"
+
+    # Optional but recommended: legacy tools for compatibility
+    echo -e "${BLUE}Installing optional compatibility tools...${NC}"
+    opkg install net-tools 2>/dev/null || echo -e "${YELLOW}⚠ net-tools (provides 'arp' command) not available - will use 'ip neigh' instead${NC}"
+    opkg install busybox 2>/dev/null || echo -e "${YELLOW}⚠ busybox already installed or not available${NC}"
+
+    # Translation layer
+    echo -e "${BLUE}Installing 464XLAT for IPv4/IPv6 translation...${NC}"
+    opkg install 464xlat 2>/dev/null || echo -e "${YELLOW}⚠ 464xlat installation failed - may need to be configured manually${NC}"
+
+    # Additional useful tools
+    opkg install procps-ng procps-ng-sysctl 2>/dev/null || echo -e "${YELLOW}⚠ procps-ng (provides 'sysctl') not available${NC}"
+
+    echo -e "${GREEN}✓ Package installation completed${NC}"
+    echo -e "${BLUE}Note: Some warnings above are normal if packages are already installed.${NC}"
 else
-    echo -e "${YELLOW}opkg not found; please ensure python3, iptables, odhcp6c, 464XLAT are installed manually on this system.${NC}"
+    echo -e "${YELLOW}opkg not found; assuming non-OpenWrt system.${NC}"
+    echo -e "${YELLOW}Please ensure these packages are installed:${NC}"
+    echo "  - python3 (with logging module)"
+    echo "  - ip-full or iproute2"
+    echo "  - odhcp6c"
+    echo "  - iptables and ip6tables"
+    echo "  - net-tools (optional, provides 'arp')"
+    echo "  - 464xlat (for IPv4/IPv6 translation)"
 fi
-echo -e "${GREEN}✓ Dependency step completed (some packages may need manual install)${NC}\n"
+echo ""
 
 # Optional: curl health check (for user info only)
 echo -e "${YELLOW}Checking curl health...${NC}"

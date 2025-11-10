@@ -10,6 +10,7 @@ and maintains transparent IPv4↔IPv6 translation via 464XLAT.
 
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -169,7 +170,7 @@ class NetworkInterface:
 
 
 class ARPMonitor:
-    """Monitors ARP table for new devices on eth0"""
+    """Monitors ARP table for new devices on eth1"""
 
     def __init__(self, interface: str):
         self.interface = interface
@@ -180,7 +181,63 @@ class ARPMonitor:
         """
         Get all MAC addresses and their IPv4 addresses in ARP table for this interface.
         Returns list of (mac, ipv4) tuples.
+        Uses 'ip neigh' (modern) or falls back to 'arp' (legacy).
         """
+        # Try modern 'ip neigh' first (more reliable on OpenWrt)
+        entries = self._get_entries_via_ip_neigh()
+        if entries:
+            return entries
+
+        # Fallback to legacy 'arp' command
+        return self._get_entries_via_arp()
+
+    def _get_entries_via_ip_neigh(self) -> List[tuple]:
+        """Get ARP entries using 'ip neigh' command (modern approach)"""
+        try:
+            result = subprocess.run(
+                [cfg.CMD_IP, "neigh", "show", "dev", self.interface],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            entries: List[tuple] = []
+            for line in result.stdout.splitlines():
+                # Format: 192.168.1.100 lladdr aa:bb:cc:dd:ee:ff REACHABLE
+                # or:     192.168.1.100 lladdr aa:bb:cc:dd:ee:ff STALE
+                parts = line.split()
+                if len(parts) >= 4 and parts[1] == "lladdr":
+                    ipv4 = parts[0]
+                    mac = parts[2].lower()
+
+                    # Validate IPv4 format
+                    ipv4_match = re.match(
+                        r"^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$", ipv4
+                    )
+                    # Validate MAC format
+                    mac_match = re.match(r"^([0-9a-f]{2}:){5}([0-9a-f]{2})$", mac)
+
+                    if ipv4_match and mac_match:
+                        # Filter out broadcast/invalid MACs
+                        if mac not in {"ff:ff:ff:ff:ff:ff", "00:00:00:00:00:00"}:
+                            entries.append((mac, ipv4))
+
+            return entries
+        except subprocess.CalledProcessError as e:
+            self.logger.debug(f"'ip neigh' failed, will try 'arp': {e}")
+            return []
+
+    def _get_entries_via_arp(self) -> List[tuple]:
+        """Get ARP entries using legacy 'arp' command (fallback)"""
+        # Skip if arp command doesn't exist
+        if (
+            not hasattr(cfg, "CMD_ARP")
+            or not cfg.CMD_ARP
+            or not os.path.exists(cfg.CMD_ARP)
+        ):
+            self.logger.debug("'arp' command not available, skipping fallback")
+            return []
+
         try:
             result = subprocess.run(
                 [cfg.CMD_ARP, "-i", self.interface, "-n"],
