@@ -38,12 +38,20 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Step 1: Install Python dependencies
+# Step 1: Install Python and system dependencies
 echo -e "${YELLOW}Step 1: Installing system dependencies...${NC}"
+
+if ! command -v opkg &> /dev/null; then
+    echo -e "${RED}opkg not found. This installer is intended for OpenWrt systems.${NC}"
+    exit 1
+fi
+
 opkg update
 opkg install python3 python3-light python3-logging
 opkg install odhcp6c iptables ip6tables
 opkg install 464xlat
+opkg install curl
+
 echo -e "${GREEN}✓ Dependencies installed${NC}\n"
 
 # Step 2: Create directories
@@ -52,6 +60,7 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$CONFIG_DIR"
 mkdir -p "$LOG_DIR"
 mkdir -p "/var/run/$SERVICE_NAME"
+mkdir -p "/usr/local/bin"
 echo -e "${GREEN}✓ Directories created${NC}\n"
 
 # Step 3: Copy Python files
@@ -90,7 +99,7 @@ else
     echo -e "${BLUE}Step 4: Skipping systemd (not available on OpenWrt)${NC}\n"
 fi
 
-# Step 5: Create init.d script (works on both systemd and OpenWrt)
+# Step 5: Create init.d script (works on OpenWrt)
 echo -e "${YELLOW}Step 5: Creating init.d script...${NC}"
 cat > /etc/init.d/$SERVICE_NAME << 'EOF'
 #!/bin/sh /etc/rc.common
@@ -98,17 +107,32 @@ cat > /etc/init.d/$SERVICE_NAME << 'EOF'
 START=99
 STOP=01
 
+SERVICE_NAME="ipv4-ipv6-gateway"
+RUN_DIR="/var/run"
+PID_FILE="${RUN_DIR}/${SERVICE_NAME}.pid"
+LOG_FILE="/var/log/ipv4-ipv6-gateway.log"
+INSTALL_DIR="/opt/ipv4-ipv6-gateway"
+PYTHON_BIN="/usr/bin/python3"
+
 start() {
     echo "Starting IPv4↔IPv6 Gateway Service..."
-    /usr/bin/python3 /opt/ipv4-ipv6-gateway/ipv4_ipv6_gateway.py > /var/log/ipv4-ipv6-gateway.log 2>&1 &
-    echo $! > /var/run/ipv4-ipv6-gateway.pid
+    mkdir -p "$RUN_DIR"
+    [ -x "$PYTHON_BIN" ] || {
+        echo "Error: $PYTHON_BIN not found"
+        return 1
+    }
+    "$PYTHON_BIN" "$INSTALL_DIR/ipv4_ipv6_gateway.py" >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
 }
 
 stop() {
     echo "Stopping IPv4↔IPv6 Gateway Service..."
-    if [ -f /var/run/ipv4-ipv6-gateway.pid ]; then
-        kill $(cat /var/run/ipv4-ipv6-gateway.pid) 2>/dev/null || true
-        rm -f /var/run/ipv4-ipv6-gateway.pid
+    if [ -f "$PID_FILE" ]; then
+        PID="$(cat "$PID_FILE")"
+        if kill -0 "$PID" 2>/dev/null; then
+            kill "$PID" 2>/dev/null || true
+        fi
+        rm -f "$PID_FILE"
     fi
 }
 
@@ -119,9 +143,10 @@ restart() {
 }
 
 status() {
-    if [ -f /var/run/ipv4-ipv6-gateway.pid ]; then
-        if kill -0 $(cat /var/run/ipv4-ipv6-gateway.pid) 2>/dev/null; then
-            echo "IPv4↔IPv6 Gateway Service is running (PID: $(cat /var/run/ipv4-ipv6-gateway.pid))"
+    if [ -f "$PID_FILE" ]; then
+        PID="$(cat "$PID_FILE")"
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "IPv4↔IPv6 Gateway Service is running (PID: $PID)"
             return 0
         fi
     fi
@@ -133,9 +158,12 @@ EOF
 chmod +x /etc/init.d/$SERVICE_NAME
 echo -e "${GREEN}✓ Init.d script created${NC}\n"
 
-# Step 6: Configure network interfaces
-echo -e "${YELLOW}Step 6: Configuring network interfaces...${NC}"
+# Step 6: Configure network interfaces (sample UCI config)
+echo -e "${YELLOW}Step 6: Configuring network interfaces (sample)...${NC}"
 cat > "$CONFIG_DIR/network-config.uci" << 'EOF'
+# Sample network configuration for the IPv4↔IPv6 gateway.
+# Review and adapt to your hardware/interface names before importing.
+
 config interface 'lan'
 	option ifname 'eth0'
 	option proto 'static'
@@ -147,12 +175,12 @@ config interface 'wan'
 	option proto 'dhcpv6'
 EOF
 
-echo -e "${GREEN}✓ Network configuration created at $CONFIG_DIR/network-config.uci${NC}\n"
+echo -e "${GREEN}✓ Network configuration sample created at $CONFIG_DIR/network-config.uci${NC}\n"
 
-# Step 7: Create sample configuration
-echo -e "${YELLOW}Step 7: Creating sample configuration...${NC}"
+# Step 7: Create sample configuration override
+echo -e "${YELLOW}Step 7: Creating sample configuration override...${NC}"
 cat > "$CONFIG_DIR/config.py" << 'EOF'
-# Override any settings from gateway_config.py here
+# Override any settings from gateway_config.py here.
 # Example:
 # LOG_LEVEL = 'DEBUG'
 # ARP_MONITOR_INTERVAL = 5
@@ -199,7 +227,7 @@ echo -e "${BLUE}Init System: $INIT_SYSTEM${NC}\n"
 
 echo -e "${YELLOW}Next Steps:${NC}"
 echo ""
-echo "1. Configure network interfaces:"
+echo "1. Configure network interfaces (review before applying):"
 echo "   uci import < $CONFIG_DIR/network-config.uci"
 echo "   /etc/init.d/network restart"
 echo ""
@@ -233,8 +261,8 @@ echo "   http://localhost:8080/devices/MAC      # Device details"
 echo ""
 echo -e "${GREEN}Installation Locations:${NC}"
 echo "   Service: $INSTALL_DIR"
-echo "   Config: $CONFIG_DIR"
-echo "   Logs: $LOG_DIR"
+echo "   Config:  $CONFIG_DIR"
+echo "   Logs:    $LOG_DIR"
 echo ""
 echo -e "${YELLOW}Service Management:${NC}"
 

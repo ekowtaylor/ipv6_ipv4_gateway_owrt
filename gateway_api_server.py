@@ -8,35 +8,62 @@ import json
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import threading
+from datetime import datetime
 
-logger = logging.getLogger('GatewayAPI')
+logger = logging.getLogger("GatewayAPI")
 
 
 class GatewayAPIHandler(BaseHTTPRequestHandler):
     """HTTP request handler for gateway API"""
 
     # Class variable - will be set by server
-    gateway_service = None
+    gateway_service: Any = None
 
-    def log_message(self, format, *args):
-        """Override to use logger instead of stderr"""
-        logger.debug(format % args)
+    # ------------- Core HTTP helpers -------------
 
-    def send_json_response(self, data: Dict[Any, Any], status_code: int = 200):
-        """Send JSON response"""
+    def log_message(self, format_str: str, *args) -> None:
+        """
+        Override to use logger instead of stderr.
+        (Keep signature compatible with BaseHTTPRequestHandler.log_message)
+        """
+        logger.debug(format_str % args)
+
+    def send_json_response(self, data: Dict[Any, Any], status_code: int = 200) -> None:
+        """Send JSON response with CORS headers"""
+        response_bytes = json.dumps(data, indent=2).encode("utf-8")
+
         self.send_response(status_code)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response_bytes)))
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        self.wfile.write(json.dumps(data, indent=2).encode())
+        self.wfile.write(response_bytes)
 
-    def send_error_response(self, message: str, status_code: int = 400):
-        """Send error response"""
-        self.send_json_response({'error': message}, status_code)
+    def send_error_response(self, message: str, status_code: int = 400) -> None:
+        """Send error response as JSON"""
+        payload = {"error": message}
+        self.send_json_response(payload, status_code)
 
-    def do_GET(self):
+    # ------------- HTTP verbs -------------
+
+    def do_HEAD(self) -> None:
+        """Basic HEAD handler (useful for some health checks)"""
+        parsed_path = urlparse(self.path)
+        path = parsed_path.path
+
+        if path in ("/", "/health", "/status"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+    def do_GET(self) -> None:
         """Handle GET requests"""
         parsed_path = urlparse(self.path)
         path = parsed_path.path
@@ -44,192 +71,228 @@ class GatewayAPIHandler(BaseHTTPRequestHandler):
 
         try:
             # Status endpoint
-            if path == '/status':
+            if path == "/status":
                 self.handle_status()
 
             # Devices endpoint
-            elif path == '/devices':
+            elif path == "/devices":
                 self.handle_devices(query_string)
 
             # Device detail endpoint
-            elif path.startswith('/devices/'):
-                mac = path.split('/')[-1]
+            elif path.startswith("/devices/"):
+                mac = path.split("/")[-1]
                 self.handle_device_detail(mac)
 
             # Health check
-            elif path == '/health':
-                self.send_json_response({'status': 'ok'})
+            elif path == "/health":
+                self.send_json_response({"status": "ok"})
 
             # API info
-            elif path == '/':
+            elif path == "/":
                 self.handle_root()
 
             else:
-                self.send_error_response('Not found', 404)
+                self.send_error_response("Not found", 404)
 
         except Exception as e:
-            logger.error(f"Error handling GET {path}: {e}")
-            self.send_error_response(f'Internal error: {str(e)}', 500)
+            logger.error("Error handling GET %s: %s", path, e, exc_info=True)
+            self.send_error_response(f"Internal error: {str(e)}", 500)
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         """Handle POST requests"""
         parsed_path = urlparse(self.path)
         path = parsed_path.path
 
         try:
             # Read request body
-            content_length = int(self.headers.get('Content-Length', 0))
-            body = self.rfile.read(content_length)
-            data = json.loads(body) if body else {}
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length > 0 else b""
+            data: Dict[str, Any] = {}
+
+            if body:
+                try:
+                    data = json.loads(body)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Invalid JSON payload on %s: %r", path, body[:200]
+                    )
+                    self.send_error_response("Invalid JSON payload", 400)
+                    return
 
             # Clear device cache (admin action)
-            if path == '/admin/clear-cache':
+            if path == "/admin/clear-cache":
                 self.handle_clear_cache(data)
 
             # Export devices
-            elif path == '/admin/export':
+            elif path == "/admin/export":
                 self.handle_export()
 
             else:
-                self.send_error_response('Not found', 404)
+                self.send_error_response("Not found", 404)
 
         except Exception as e:
-            logger.error(f"Error handling POST {path}: {e}")
-            self.send_error_response(f'Internal error: {str(e)}', 500)
+            logger.error("Error handling POST %s: %s", path, e, exc_info=True)
+            self.send_error_response(f"Internal error: {str(e)}", 500)
 
-    def do_OPTIONS(self):
+    def do_OPTIONS(self) -> None:
         """Handle CORS preflight"""
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
-    def handle_root(self):
-        """Handle root endpoint - API info"""
+    # ------------- Route handlers -------------
+
+    def handle_root(self) -> None:
+        """GET / - API info"""
         info = {
-            'name': 'IPv4↔IPv6 Gateway API',
-            'version': '1.0',
-            'endpoints': {
-                'GET /': 'This information',
-                'GET /health': 'Health check',
-                'GET /status': 'Gateway status and statistics',
-                'GET /devices': 'List all devices (supports ?status=active|inactive|all)',
-                'GET /devices/<mac>': 'Get specific device details',
-                'POST /admin/export': 'Export all device mappings',
-                'POST /admin/clear-cache': 'Clear device cache (requires confirmation)',
-            }
+            "name": "IPv4↔IPv6 Gateway API",
+            "version": "1.0",
+            "endpoints": {
+                "GET /": "This information",
+                "GET /health": "Health check",
+                "GET /status": "Gateway status and statistics",
+                "GET /devices": "List all devices (supports ?status=active|inactive|all)",
+                "GET /devices/<mac>": "Get specific device details",
+                "POST /admin/export": "Export all device mappings",
+                "POST /admin/clear-cache": "Clear device cache (requires confirmation)",
+            },
         }
         self.send_json_response(info)
 
-    def handle_status(self):
+    def handle_status(self) -> None:
         """GET /status - Return gateway status"""
         if not self.gateway_service:
-            self.send_error_response('Gateway service not available', 503)
+            self.send_error_response("Gateway service not available", 503)
             return
 
         status = self.gateway_service.get_status()
         self.send_json_response(status)
 
-    def handle_devices(self, query_string: Dict[str, list]):
+    def handle_devices(self, query_string: Dict[str, List[str]]) -> None:
         """GET /devices - List devices with optional filtering"""
         if not self.gateway_service:
-            self.send_error_response('Gateway service not available', 503)
+            self.send_error_response("Gateway service not available", 503)
             return
 
         # Get filter parameter
-        status_filter = query_string.get('status', ['all'])[0].lower()
+        status_filter = query_string.get("status", ["all"])[0].lower()
 
         devices = self.gateway_service.list_devices()
 
-        # Filter by status
-        if status_filter != 'all':
-            devices = [d for d in devices if d.status == status_filter]
+        # Filter by status (expects device.status to be a string like 'active'/'inactive')
+        if status_filter != "all":
+            devices = [d for d in devices if getattr(d, "status", "").lower() == status_filter]
 
         device_list = [d.to_dict() for d in devices]
 
-        self.send_json_response({
-            'total': len(device_list),
-            'devices': device_list
-        })
+        self.send_json_response(
+            {
+                "total": len(device_list),
+                "devices": device_list,
+            }
+        )
 
-    def handle_device_detail(self, mac: str):
+    def handle_device_detail(self, mac: str) -> None:
         """GET /devices/<mac> - Get specific device"""
         if not self.gateway_service:
-            self.send_error_response('Gateway service not available', 503)
+            self.send_error_response("Gateway service not available", 503)
             return
 
         device = self.gateway_service.get_device(mac)
 
         if not device:
-            self.send_error_response(f'Device {mac} not found', 404)
+            self.send_error_response(f"Device {mac} not found", 404)
             return
 
         self.send_json_response(device.to_dict())
 
-    def handle_export(self):
+    def handle_export(self) -> None:
         """POST /admin/export - Export all device mappings"""
         if not self.gateway_service:
-            self.send_error_response('Gateway service not available', 503)
+            self.send_error_response("Gateway service not available", 503)
             return
 
         devices = self.gateway_service.list_devices()
         device_dict = {d.mac_address: d.to_dict() for d in devices}
 
-        self.send_json_response({
-            'exported_at': __import__('datetime').datetime.now().isoformat(),
-            'device_count': len(devices),
-            'devices': device_dict
-        })
+        self.send_json_response(
+            {
+                "exported_at": datetime.now().isoformat(),
+                "device_count": len(devices),
+                "devices": device_dict,
+            }
+        )
 
-    def handle_clear_cache(self, data: Dict):
+    def handle_clear_cache(self, data: Dict[str, Any]) -> None:
         """POST /admin/clear-cache - Clear device cache"""
-        confirmation = data.get('confirm', False)
-
-        if not confirmation:
-            self.send_error_response('Confirmation required: send {"confirm": true}', 400)
+        if not self.gateway_service:
+            self.send_error_response("Gateway service not available", 503)
             return
 
-        # This would require implementing cache clearing in the service
-        self.send_json_response({
-            'message': 'Cache clear not yet implemented',
-            'status': 'pending'
-        })
+        confirmation = data.get("confirm", False)
+
+        if not confirmation:
+            self.send_error_response(
+                'Confirmation required: send {"confirm": true}', 400
+            )
+            return
+
+        # If the gateway service exposes a clear_cache() method, call it.
+        clear_fn = getattr(self.gateway_service, "clear_cache", None)
+        if callable(clear_fn):
+            result = clear_fn()
+            payload: Dict[str, Any] = {
+                "message": "Cache cleared successfully",
+                "status": "ok",
+            }
+            if isinstance(result, dict):
+                payload.update(result)
+            self.send_json_response(payload)
+        else:
+            # Fallback: not yet implemented by the service
+            self.send_json_response(
+                {
+                    "message": "Cache clear not yet implemented on gateway service",
+                    "status": "pending",
+                }
+            )
 
 
 class GatewayAPIServer:
     """API Server for gateway service"""
 
-    def __init__(self, gateway_service, host: str = '127.0.0.1', port: int = 8080):
+    def __init__(self, gateway_service: Any, host: str = "127.0.0.1", port: int = 8080):
         self.gateway_service = gateway_service
         self.host = host
         self.port = port
-        self.logger = logging.getLogger('GatewayAPIServer')
-        self.server = None
-        self.server_thread = None
+        self.logger = logging.getLogger("GatewayAPIServer")
+        self.server: Optional[HTTPServer] = None
+        self.server_thread: Optional[threading.Thread] = None
 
-    def start(self):
+    def start(self) -> None:
         """Start the API server"""
         # Set the gateway service on the handler class
         GatewayAPIHandler.gateway_service = self.gateway_service
 
         try:
             self.server = HTTPServer((self.host, self.port), GatewayAPIHandler)
-            self.logger.info(f"API Server starting on {self.host}:{self.port}")
+            self.logger.info("API Server starting on %s:%d", self.host, self.port)
 
             # Run server in a thread
             self.server_thread = threading.Thread(
                 target=self.server.serve_forever,
-                daemon=True
+                daemon=True,
             )
             self.server_thread.start()
             self.logger.info("API Server started successfully")
 
         except Exception as e:
-            self.logger.error(f"Failed to start API server: {e}")
+            self.logger.error("Failed to start API server: %s", e, exc_info=True)
             raise
 
-    def stop(self):
+    def stop(self) -> None:
         """Stop the API server"""
         if self.server:
             self.logger.info("Stopping API server...")
@@ -239,29 +302,28 @@ class GatewayAPIServer:
             self.logger.info("API server stopped")
 
 
-def test_api_client():
+def test_api_client() -> None:
     """Simple test client for the API"""
     import urllib.request
-    import json
 
-    base_url = 'http://127.0.0.1:8080'
+    base_url = "http://127.0.0.1:8080"
 
     try:
         # Test health
         print("Testing /health endpoint...")
-        response = urllib.request.urlopen(f'{base_url}/health')
+        response = urllib.request.urlopen(f"{base_url}/health", timeout=3)
         print(f"Response: {json.loads(response.read())}\n")
 
         # Test status
         print("Testing /status endpoint...")
-        response = urllib.request.urlopen(f'{base_url}/status')
+        response = urllib.request.urlopen(f"{base_url}/status", timeout=3)
         data = json.loads(response.read())
         print(f"Gateway running: {data.get('running')}")
         print(f"Active devices: {data.get('active_devices')}\n")
 
         # Test devices list
         print("Testing /devices endpoint...")
-        response = urllib.request.urlopen(f'{base_url}/devices')
+        response = urllib.request.urlopen(f"{base_url}/devices", timeout=3)
         data = json.loads(response.read())
         print(f"Total devices: {data.get('total')}\n")
 
@@ -269,6 +331,6 @@ def test_api_client():
         print(f"Error: {e}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Run test client
     test_api_client()
