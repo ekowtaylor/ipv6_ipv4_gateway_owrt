@@ -1,8 +1,13 @@
 #!/bin/bash
-
+#
 # Installation script for IPv4↔IPv6 Gateway Service
-# Run this on the NanoPi R5C after flashing OpenWrt
-# Works with both systemd and OpenWrt init.d systems
+# Target: NanoPi R5C running OpenWrt (but also works on generic Linux with systemd)
+#
+# - Installs Python service under /opt/ipv4-ipv6-gateway
+# - Creates config dir /etc/ipv4-ipv6-gateway
+# - Sets up init.d (OpenWrt/procd) and optional systemd service
+# - Creates helper CLI tools: gateway-status, gateway-devices
+#
 
 set -e
 
@@ -21,7 +26,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Detect init system
-if command -v systemctl &> /dev/null; then
+if command -v systemctl >/dev/null 2>&1; then
     INIT_SYSTEM="systemd"
 else
     INIT_SYSTEM="initd"
@@ -38,21 +43,31 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# Step 1: Install Python and system dependencies
-echo -e "${YELLOW}Step 1: Installing system dependencies...${NC}"
-
-if ! command -v opkg &> /dev/null; then
-    echo -e "${RED}opkg not found. This installer is intended for OpenWrt systems.${NC}"
-    exit 1
+# Step 1: Install system dependencies (OpenWrt / opkg only)
+echo -e "${YELLOW}Step 1: Installing system dependencies (if opkg is available)...${NC}"
+if command -v opkg >/dev/null 2>&1; then
+    opkg update || echo -e "${YELLOW}⚠ opkg update failed (no WAN or mirror issue). Continuing...${NC}"
+    opkg install python3 python3-light python3-logging 2>/dev/null || true
+    opkg install odhcp6c iptables ip6tables 2>/dev/null || true
+    opkg install 464xlat 2>/dev/null || true
+else
+    echo -e "${YELLOW}opkg not found; please ensure python3, iptables, odhcp6c, 464XLAT are installed manually on this system.${NC}"
 fi
+echo -e "${GREEN}✓ Dependency step completed (some packages may need manual install)${NC}\n"
 
-opkg update
-opkg install python3 python3-light python3-logging
-opkg install odhcp6c iptables ip6tables
-opkg install 464xlat
-opkg install curl
-
-echo -e "${GREEN}✓ Dependencies installed${NC}\n"
+# Optional: curl health check (for user info only)
+echo -e "${YELLOW}Checking curl health...${NC}"
+if command -v curl >/dev/null 2>&1; then
+    if ! curl --version >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ Detected a broken curl binary (libcurl/OpenSSL mismatch).${NC}"
+        echo -e "${YELLOW}  The gateway helpers will fall back to wget where possible.${NC}"
+    else
+        echo -e "${GREEN}✓ curl appears to be working${NC}"
+    fi
+else
+    echo -e "${YELLOW}curl not found; gateway helpers will use wget if available.${NC}"
+fi
+echo ""
 
 # Step 2: Create directories
 echo -e "${YELLOW}Step 2: Creating directories...${NC}"
@@ -60,21 +75,21 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$CONFIG_DIR"
 mkdir -p "$LOG_DIR"
 mkdir -p "/var/run/$SERVICE_NAME"
-mkdir -p "/usr/local/bin"
 echo -e "${GREEN}✓ Directories created${NC}\n"
 
 # Step 3: Copy Python files
 echo -e "${YELLOW}Step 3: Installing Python files...${NC}"
+# Assumes these files are in the current working directory
 cp ipv4_ipv6_gateway.py "$INSTALL_DIR/"
 cp gateway_config.py "$INSTALL_DIR/"
 cp gateway_api_server.py "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/ipv4_ipv6_gateway.py"
-echo -e "${GREEN}✓ Python files installed${NC}\n"
+echo -e "${GREEN}✓ Python files installed to $INSTALL_DIR${NC}\n"
 
 # Step 4: Create systemd service file (only if systemd exists)
 if [ "$INIT_SYSTEM" = "systemd" ]; then
     echo -e "${YELLOW}Step 4: Creating systemd service...${NC}"
-    cat > /etc/systemd/system/$SERVICE_NAME.service << 'EOF'
+    cat > /etc/systemd/system/$SERVICE_NAME.service << EOF
 [Unit]
 Description=IPv4↔IPv6 Gateway Service
 After=network.target
@@ -83,8 +98,8 @@ After=network.target
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/opt/ipv4-ipv6-gateway
-ExecStart=/usr/bin/python3 /opt/ipv4-ipv6-gateway/ipv4_ipv6_gateway.py
+WorkingDirectory=$INSTALL_DIR
+ExecStart=/usr/bin/python3 $INSTALL_DIR/ipv4_ipv6_gateway.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -96,10 +111,10 @@ EOF
     chmod 644 /etc/systemd/system/$SERVICE_NAME.service
     echo -e "${GREEN}✓ Systemd service created${NC}\n"
 else
-    echo -e "${BLUE}Step 4: Skipping systemd (not available on OpenWrt)${NC}\n"
+    echo -e "${BLUE}Step 4: Skipping systemd (not available)${NC}\n"
 fi
 
-# Step 5: Create init.d script (works on OpenWrt)
+# Step 5: Create init.d script (OpenWrt / rc.common + procd)
 echo -e "${YELLOW}Step 5: Creating init.d script...${NC}"
 cat > /etc/init.d/$SERVICE_NAME << 'EOF'
 #!/bin/sh /etc/rc.common
@@ -107,46 +122,34 @@ cat > /etc/init.d/$SERVICE_NAME << 'EOF'
 START=99
 STOP=01
 
+USE_PROCD=1
 SERVICE_NAME="ipv4-ipv6-gateway"
-RUN_DIR="/var/run"
-PID_FILE="${RUN_DIR}/${SERVICE_NAME}.pid"
-LOG_FILE="/var/log/ipv4-ipv6-gateway.log"
-INSTALL_DIR="/opt/ipv4-ipv6-gateway"
-PYTHON_BIN="/usr/bin/python3"
+DAEMON="/usr/bin/python3"
+DAEMON_OPTS="/opt/ipv4-ipv6-gateway/ipv4_ipv6_gateway.py"
+PIDFILE="/var/run/ipv4-ipv6-gateway.pid"
+LOGFILE="/var/log/ipv4-ipv6-gateway.log"
 
-start() {
-    echo "Starting IPv4↔IPv6 Gateway Service..."
-    mkdir -p "$RUN_DIR"
-    [ -x "$PYTHON_BIN" ] || {
-        echo "Error: $PYTHON_BIN not found"
-        return 1
-    }
-    "$PYTHON_BIN" "$INSTALL_DIR/ipv4_ipv6_gateway.py" >> "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
+start_service() {
+    mkdir -p /var/run/$SERVICE_NAME
+
+    procd_open_instance
+    procd_set_param command "$DAEMON" $DAEMON_OPTS
+    procd_set_param respawn
+    procd_set_param pidfile "$PIDFILE"
+    procd_close_instance
 }
 
-stop() {
-    echo "Stopping IPv4↔IPv6 Gateway Service..."
-    if [ -f "$PID_FILE" ]; then
-        PID="$(cat "$PID_FILE")"
-        if kill -0 "$PID" 2>/dev/null; then
-            kill "$PID" 2>/dev/null || true
-        fi
-        rm -f "$PID_FILE"
+stop_service() {
+    if [ -f "$PIDFILE" ]; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null || true
+        rm -f "$PIDFILE"
     fi
 }
 
-restart() {
-    stop
-    sleep 1
-    start
-}
-
 status() {
-    if [ -f "$PID_FILE" ]; then
-        PID="$(cat "$PID_FILE")"
-        if kill -0 "$PID" 2>/dev/null; then
-            echo "IPv4↔IPv6 Gateway Service is running (PID: $PID)"
+    if [ -f "$PIDFILE" ]; then
+        if kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "IPv4↔IPv6 Gateway Service is running (PID: $(cat "$PIDFILE"))"
             return 0
         fi
     fi
@@ -177,12 +180,12 @@ config interface 'wan'
 	option proto 'dhcpv6'
 EOF
 
-echo -e "${GREEN}✓ Network configuration sample created at $CONFIG_DIR/network-config.uci${NC}\n"
+echo -e "${GREEN}✓ Network configuration created at $CONFIG_DIR/network-config.uci${NC}\n"
 
-# Step 7: Create sample configuration override
-echo -e "${YELLOW}Step 7: Creating sample configuration override...${NC}"
+# Step 7: Create sample override configuration
+echo -e "${YELLOW}Step 7: Creating sample override configuration...${NC}"
 cat > "$CONFIG_DIR/config.py" << 'EOF'
-# Override any settings from gateway_config.py here.
+# Override any settings from gateway_config.py here
 # Example:
 # LOG_LEVEL = 'DEBUG'
 # ARP_MONITOR_INTERVAL = 5
@@ -193,31 +196,73 @@ echo -e "${GREEN}✓ Sample configuration created at $CONFIG_DIR/config.py${NC}\
 # Step 8: Enable services
 echo -e "${YELLOW}Step 8: Enabling services...${NC}"
 if [ "$INIT_SYSTEM" = "systemd" ]; then
-    systemctl daemon-reload
-    systemctl enable $SERVICE_NAME
+    systemctl daemon-reload || true
+    systemctl enable $SERVICE_NAME || true
     echo -e "${GREEN}✓ Service enabled with systemd${NC}"
-else
-    /etc/init.d/$SERVICE_NAME enable
+fi
+
+if [ -x "/etc/init.d/$SERVICE_NAME" ]; then
+    /etc/init.d/$SERVICE_NAME enable || true
     echo -e "${GREEN}✓ Service enabled with init.d (OpenWrt)${NC}"
 fi
 echo ""
 
-# Step 9: Create helper scripts
+# Step 9: Create helper scripts (curl-or-wget)
 echo -e "${YELLOW}Step 9: Creating helper scripts...${NC}"
 
 # Status script
-cat > /usr/local/bin/gateway-status << 'EOF'
-#!/bin/bash
-curl -s http://127.0.0.1:8080/status | python3 -m json.tool
+cat > /usr/bin/gateway-status << 'EOF'
+#!/bin/sh
+URL="http://127.0.0.1:8080/status"
+
+http_get() {
+    if command -v curl >/dev/null 2>&1; then
+        # Test curl is actually usable
+        if curl -sS "$1" >/dev/null 2>&1; then
+            curl -s "$1"
+            return 0
+        fi
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -qO- "$1"
+        return 0
+    fi
+
+    echo "Error: neither working curl nor wget is available" >&2
+    return 1
+}
+
+http_get "$URL" | python3 -m json.tool
 EOF
-chmod +x /usr/local/bin/gateway-status
+chmod +x /usr/bin/gateway-status
 
 # Devices script
-cat > /usr/local/bin/gateway-devices << 'EOF'
-#!/bin/bash
-curl -s "http://127.0.0.1:8080/devices?status=${1:-all}" | python3 -m json.tool
+cat > /usr/bin/gateway-devices << 'EOF'
+#!/bin/sh
+STATUS="${1:-all}"
+URL="http://127.0.0.1:8080/devices?status=${STATUS}"
+
+http_get() {
+    if command -v curl >/dev/null 2>&1; then
+        if curl -sS "$1" >/dev/null 2>&1; then
+            curl -s "$1"
+            return 0
+        fi
+    fi
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -qO- "$1"
+        return 0
+    fi
+
+    echo "Error: neither working curl nor wget is available" >&2
+    return 1
+}
+
+http_get "$URL" | python3 -m json.tool
 EOF
-chmod +x /usr/local/bin/gateway-devices
+chmod +x /usr/bin/gateway-devices
 
 echo -e "${GREEN}✓ Helper scripts created${NC}\n"
 
@@ -229,12 +274,11 @@ echo -e "${BLUE}Init System: $INIT_SYSTEM${NC}\n"
 
 echo -e "${YELLOW}Next Steps:${NC}"
 echo ""
-echo "1. Configure network interfaces (review before applying):"
+echo "1. Configure network interfaces (ONLY after you review the sample):"
 echo "   uci import < $CONFIG_DIR/network-config.uci"
 echo "   /etc/init.d/network restart"
 echo ""
 echo "2. Start the gateway service:"
-
 if [ "$INIT_SYSTEM" = "systemd" ]; then
     echo "   systemctl start $SERVICE_NAME"
     echo "   systemctl status $SERVICE_NAME"
@@ -242,7 +286,6 @@ else
     echo "   /etc/init.d/$SERVICE_NAME start"
     echo "   /etc/init.d/$SERVICE_NAME status"
 fi
-
 echo ""
 echo "3. Check status:"
 echo "   gateway-status"
@@ -267,23 +310,11 @@ echo "   Config:  $CONFIG_DIR"
 echo "   Logs:    $LOG_DIR"
 echo ""
 echo -e "${YELLOW}Service Management:${NC}"
-
 if [ "$INIT_SYSTEM" = "systemd" ]; then
     echo "   systemctl start/stop/restart/status $SERVICE_NAME"
 else
     echo "   /etc/init.d/$SERVICE_NAME start/stop/restart/status"
     echo "   /etc/init.d/$SERVICE_NAME enable/disable (for auto-start)"
 fi
-
-echo ""
-echo -e "${YELLOW}Useful Commands:${NC}"
-echo "   View logs:"
-echo "     tail -f /var/log/ipv4-ipv6-gateway.log"
-echo ""
-echo "   Check if service is running:"
-echo "     ps aux | grep ipv4_ipv6_gateway"
-echo ""
-echo "   Query API:"
-echo "     curl http://localhost:8080/status"
 echo ""
 echo -e "${GREEN}========================================${NC}\n"
