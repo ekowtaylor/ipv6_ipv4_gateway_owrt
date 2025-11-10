@@ -161,6 +161,8 @@ echo -e "${GREEN}✓ Init.d script created${NC}\n"
 # Step 6: Configure network interfaces (sample UCI config)
 echo -e "${YELLOW}Step 6: Configuring network interfaces (sample)...${NC}"
 cat > "$CONFIG_DIR/network-config.uci" << 'EOF'
+package network
+
 # Sample network configuration for the IPv4↔IPv6 gateway.
 # Review and adapt to your hardware/interface names before importing.
 
