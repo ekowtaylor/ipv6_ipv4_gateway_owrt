@@ -6,9 +6,9 @@
 ## Overview
 
 This is a complete Python-based implementation of an IPv4↔IPv6 gateway that automatically:
-- Discovers IPv4 devices connecting to eth0
+- Discovers IPv4 devices connecting to eth1
 - Learns their MAC addresses
-- Spoofs those MACs on eth1 to request DHCPv6
+- Spoofs those MACs on eth0 to request DHCPv6
 - Discovers assigned IPv6 addresses
 - Translates traffic between IPv4 and IPv6 transparently via 464XLAT
 - Provides a REST API for monitoring and management
@@ -26,8 +26,8 @@ This is a complete Python-based implementation of an IPv4↔IPv6 gateway that au
 - Computer for SSH
 
 ### Network Setup
-- eth0: Connected to IPv4 devices
-- eth1: Connected to IPv6 network
+- eth0: Connected to IPv6 network
+- eth1: Connected to IPv4 devices
 - All device MACs pre-registered on IPv6 network firewall
 
 ### Knowledge
@@ -577,7 +577,7 @@ Edit `/opt/ipv4-ipv6-gateway/ipv4_ipv6_gateway.py`:
 ```python
 class GatewayService:
     # Add custom methods here
-    
+
     def custom_hook_on_device_discovered(self, device):
         """Called when new device is discovered"""
         # Your custom logic

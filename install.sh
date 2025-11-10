@@ -186,13 +186,13 @@ package network
 # Review and adapt to your hardware/interface names before importing.
 
 config interface 'lan'
-	option ifname 'eth0'
+	option ifname 'eth1'
 	option proto 'static'
 	option ipaddr '192.168.1.1'
 	option netmask '255.255.255.0'
 
 config interface 'wan'
-	option ifname 'eth1'
+	option ifname 'eth0'
 	option proto 'dhcpv6'
 EOF
 

@@ -3,21 +3,21 @@
 Dynamic IPv4↔IPv6 Gateway Service
 NanoPi R5C - Plug-and-Play MAC Learning with DHCPv6 Discovery
 
-Monitors IPv4 devices on eth0, discovers their MAC addresses,
-spoofs them on eth1 to request DHCPv6, learns IPv6 assignments,
+Monitors IPv4 devices on eth1, discovers their MAC addresses,
+spoofs them on eth0 to request DHCPv6, learns IPv6 assignments,
 and maintains transparent IPv4↔IPv6 translation via 464XLAT.
 """
 
-import sys
 import json
 import logging
-import time
-import threading
-import subprocess
 import re
-from pathlib import Path
-from dataclasses import dataclass, asdict
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import gateway_config as cfg
@@ -43,6 +43,7 @@ logger = logging.getLogger("GatewayService")
 @dataclass
 class DeviceMapping:
     """Represents an IPv4 device and its discovered IPv6 address"""
+
     mac_address: str
     ipv4_address: Optional[str] = None
     ipv6_address: Optional[str] = None
@@ -405,8 +406,8 @@ class GatewayService:
         self.logger = logging.getLogger("GatewayService")
         self.config_dir = config_dir
 
-        self.arp_monitor = ARPMonitor(interface=cfg.ETH0_INTERFACE)
-        self.dhcpv6_manager = DHCPv6Manager(interface=cfg.ETH1_INTERFACE)
+        self.arp_monitor = ARPMonitor(interface=cfg.ETH1_INTERFACE)
+        self.dhcpv6_manager = DHCPv6Manager(interface=cfg.ETH0_INTERFACE)
         self.device_store = DeviceStore(config_dir)
         self.firewall = FirewallManager()
         self.eth0 = NetworkInterface(cfg.ETH0_INTERFACE)
@@ -482,7 +483,9 @@ class GatewayService:
             if not self.firewall.enable_forwarding():
                 self.logger.error("Failed to enable forwarding")
                 return False
-            if not self.firewall.allow_eth0_to_eth1(cfg.ETH0_INTERFACE, cfg.ETH1_INTERFACE):
+            if not self.firewall.allow_eth0_to_eth1(
+                cfg.ETH0_INTERFACE, cfg.ETH1_INTERFACE
+            ):
                 self.logger.error("Failed to configure firewall rules")
                 return False
 

@@ -5,7 +5,7 @@ Configuration for IPv4↔IPv6 Gateway Service
 import os
 from pathlib import Path
 from shutil import which
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 # Service configuration
 SERVICE_NAME = "ipv4-ipv6-gateway"
@@ -24,8 +24,8 @@ LOG_MAX_SIZE = 10 * 1024 * 1024  # 10MB
 LOG_BACKUP_COUNT = 5
 
 # Network interfaces
-ETH0_INTERFACE = "eth0"  # IPv4 side (devices)
-ETH1_INTERFACE = "eth1"  # IPv6 side (network)
+ETH0_INTERFACE = "eth0"  # IPv6 side (network)
+ETH1_INTERFACE = "eth1"  # IPv4 side (devices)
 
 # DHCPv6 settings
 DHCPV6_TIMEOUT = 10  # seconds
@@ -33,7 +33,7 @@ DHCPV6_RETRY_COUNT = 3
 DHCPV6_RETRY_DELAY = 5  # seconds
 
 # ARP monitoring
-ARP_MONITOR_INTERVAL = 10   # seconds - check for new devices
+ARP_MONITOR_INTERVAL = 10  # seconds - check for new devices
 DEVICE_MONITOR_INTERVAL = 30  # seconds - update device status
 
 # Device storage
@@ -88,12 +88,12 @@ API_LOG_REQUESTS = False
 # Backups
 BACKUP_ENABLED = True
 BACKUP_INTERVAL = 3600  # 1 hour
-BACKUP_RETENTION = 24   # Keep 24 backups
+BACKUP_RETENTION = 24  # Keep 24 backups
 
 # System commands
 # NOTE: these are default paths; validate_config() will also try $PATH fallbacks.
-CMD_IP = "/usr/bin/ip"         # often /sbin/ip on OpenWrt
-CMD_ARP = "/usr/bin/arp"       # often /sbin/arp (busybox) on OpenWrt
+CMD_IP = "/usr/bin/ip"  # often /sbin/ip on OpenWrt
+CMD_ARP = "/usr/bin/arp"  # often /sbin/arp (busybox) on OpenWrt
 CMD_ODHCP6C = "/usr/sbin/odhcp6c"  # often /sbin/odhcp6c on OpenWrt
 CMD_IPTABLES = "/usr/sbin/iptables"
 CMD_IP6TABLES = "/usr/sbin/ip6tables"
