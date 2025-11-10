@@ -8,6 +8,13 @@
 # - Sets up init.d (OpenWrt/procd) and optional systemd service
 # - Creates helper CLI tools: gateway-status, gateway-devices
 #
+# Usage:
+#   ./install.sh                    # Safe mode (manual steps required)
+#   ./install.sh --auto-start       # Auto-start service after install
+#   ./install.sh --apply-network    # Auto-apply network config
+#   ./install.sh --full-auto        # Do everything automatically
+#   ./install.sh --help             # Show this help
+#
 
 set -e
 
@@ -17,6 +24,57 @@ SERVICE_NAME="ipv4-ipv6-gateway"
 INSTALL_DIR="/opt/ipv4-ipv6-gateway"
 CONFIG_DIR="/etc/ipv4-ipv6-gateway"
 LOG_DIR="/var/log"
+
+# Parse command-line arguments
+AUTO_START=false
+APPLY_NETWORK=false
+FULL_AUTO=false
+
+for arg in "$@"; do
+    case $arg in
+        --auto-start)
+            AUTO_START=true
+            shift
+            ;;
+        --apply-network)
+            APPLY_NETWORK=true
+            shift
+            ;;
+        --full-auto)
+            AUTO_START=true
+            APPLY_NETWORK=true
+            FULL_AUTO=true
+            shift
+            ;;
+        --help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  --auto-start      Automatically start the service after installation"
+            echo "  --apply-network   Automatically apply network configuration"
+            echo "  --full-auto       Do everything automatically (start + network)"
+            echo "  --help            Show this help message"
+            echo ""
+            echo "Default behavior (no flags):"
+            echo "  - Installs all files and dependencies"
+            echo "  - Enables service but DOES NOT start it"
+            echo "  - Creates sample network config but DOES NOT apply it"
+            echo "  - Requires manual intervention for safety"
+            echo ""
+            echo "Examples:"
+            echo "  $0                        # Safe mode"
+            echo "  $0 --auto-start           # Install and start service"
+            echo "  $0 --apply-network        # Install and apply network config"
+            echo "  $0 --full-auto            # Install, configure, and start everything"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $arg"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
 
 # Colors for output
 RED='\033[0;31m'
@@ -363,37 +421,132 @@ echo -e "${GREEN}Installation Complete!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "${BLUE}Init System: $INIT_SYSTEM${NC}\n"
 
-echo -e "${YELLOW}Next Steps:${NC}"
-echo ""
-echo "1. Configure network interfaces (ONLY after you review the sample):"
-echo "   uci import < $CONFIG_DIR/network-config.uci"
-echo "   /etc/init.d/network restart"
-echo ""
-echo "2. Start the gateway service:"
-if [ "$INIT_SYSTEM" = "systemd" ]; then
-    echo "   systemctl start $SERVICE_NAME"
-    echo "   systemctl status $SERVICE_NAME"
-else
-    echo "   /etc/init.d/$SERVICE_NAME start"
-    echo "   /etc/init.d/$SERVICE_NAME status"
+# Automatic actions based on flags
+if [ "$APPLY_NETWORK" = true ]; then
+    echo -e "${YELLOW}========================================${NC}"
+    echo -e "${YELLOW}AUTO-APPLYING NETWORK CONFIGURATION${NC}"
+    echo -e "${YELLOW}========================================${NC}"
+    echo -e "${RED}⚠ WARNING: This may disconnect your SSH session!${NC}"
+    echo -e "${YELLOW}Applying network config in 5 seconds... (Ctrl+C to cancel)${NC}"
+    sleep 5
+
+    if command -v uci >/dev/null 2>&1; then
+        echo -e "${BLUE}Importing UCI config...${NC}"
+        uci import < "$CONFIG_DIR/network-config.uci" || echo -e "${RED}⚠ Failed to import UCI config${NC}"
+        echo -e "${BLUE}Restarting network...${NC}"
+        /etc/init.d/network restart || echo -e "${RED}⚠ Failed to restart network${NC}"
+        echo -e "${GREEN}✓ Network configuration applied${NC}"
+        echo -e "${YELLOW}⚠ If you lost SSH connection, reconnect to 192.168.1.1${NC}"
+    else
+        echo -e "${YELLOW}UCI not found (not OpenWrt?). Skipping network config.${NC}"
+    fi
+    echo ""
 fi
-echo ""
-echo "3. Check status:"
-echo "   gateway-status"
-echo ""
-echo "4. List devices:"
-echo "   gateway-devices           # All devices"
-echo "   gateway-devices active    # Active only"
-echo ""
-echo "5. View logs:"
-echo "   tail -f /var/log/ipv4-ipv6-gateway.log"
+
+if [ "$AUTO_START" = true ]; then
+    echo -e "${YELLOW}========================================${NC}"
+    echo -e "${YELLOW}AUTO-STARTING SERVICE${NC}"
+    echo -e "${YELLOW}========================================${NC}"
+
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        echo -e "${BLUE}Starting service with systemd...${NC}"
+        systemctl start $SERVICE_NAME
+        sleep 2
+        systemctl status $SERVICE_NAME --no-pager || true
+    else
+        echo -e "${BLUE}Starting service with init.d...${NC}"
+        /etc/init.d/$SERVICE_NAME start
+        sleep 2
+        /etc/init.d/$SERVICE_NAME status || true
+    fi
+
+    echo ""
+    echo -e "${BLUE}Checking service health...${NC}"
+    sleep 3
+    if gateway-status >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ Service started successfully!${NC}"
+        echo ""
+        gateway-status
+    else
+        echo -e "${YELLOW}⚠ Service may still be starting or encountered an error${NC}"
+        echo -e "${YELLOW}  Check logs: tail -f /var/log/ipv4-ipv6-gateway.log${NC}"
+    fi
+    echo ""
+fi
+
+# Show next steps or completion message
+if [ "$FULL_AUTO" = true ]; then
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}FULLY AUTOMATIC INSTALLATION COMPLETE!${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+    echo -e "${GREEN}✓ All dependencies installed${NC}"
+    echo -e "${GREEN}✓ Service files created${NC}"
+    echo -e "${GREEN}✓ Network configuration applied${NC}"
+    echo -e "${GREEN}✓ Service started${NC}"
+    echo ""
+    echo -e "${YELLOW}Quick Commands:${NC}"
+    echo "   gateway-status          # Check status"
+    echo "   gateway-devices         # List devices"
+    echo "   tail -f /var/log/ipv4-ipv6-gateway.log  # View logs"
+    echo ""
+elif [ "$AUTO_START" = true ] || [ "$APPLY_NETWORK" = true ]; then
+    echo -e "${GREEN}========================================${NC}"
+    echo -e "${GREEN}SEMI-AUTOMATIC INSTALLATION COMPLETE!${NC}"
+    echo -e "${GREEN}========================================${NC}"
+    echo ""
+    if [ "$AUTO_START" = false ]; then
+        echo -e "${YELLOW}Remaining Manual Steps:${NC}"
+        echo ""
+        echo "2. Start the gateway service:"
+        if [ "$INIT_SYSTEM" = "systemd" ]; then
+            echo "   systemctl start $SERVICE_NAME"
+        else
+            echo "   /etc/init.d/$SERVICE_NAME start"
+        fi
+        echo ""
+    fi
+    if [ "$APPLY_NETWORK" = false ]; then
+        echo -e "${YELLOW}Remaining Manual Steps:${NC}"
+        echo ""
+        echo "1. Review and apply network configuration:"
+        echo "   cat $CONFIG_DIR/network-config.uci"
+        echo "   uci import < $CONFIG_DIR/network-config.uci"
+        echo "   /etc/init.d/network restart"
+        echo ""
+    fi
+else
+    echo -e "${YELLOW}Next Steps (Manual):${NC}"
+    echo ""
+    echo "1. Review and apply network configuration:"
+    echo "   cat $CONFIG_DIR/network-config.uci"
+    echo "   uci import < $CONFIG_DIR/network-config.uci"
+    echo "   /etc/init.d/network restart"
+    echo ""
+    echo "2. Start the gateway service:"
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        echo "   systemctl start $SERVICE_NAME"
+        echo "   systemctl status $SERVICE_NAME"
+    else
+        echo "   /etc/init.d/$SERVICE_NAME start"
+        echo "   /etc/init.d/$SERVICE_NAME status"
+    fi
+    echo ""
+    echo "3. Check status:"
+    echo "   gateway-status"
+    echo ""
+fi
+
+echo -e "${YELLOW}Monitoring Commands:${NC}"
+echo "   gateway-status          # Check gateway status"
+echo "   gateway-devices         # List all devices"
+echo "   gateway-devices active  # List active devices"
+echo "   tail -f /var/log/ipv4-ipv6-gateway.log  # View logs"
 echo ""
 echo -e "${YELLOW}API Endpoints:${NC}"
-echo "   http://localhost:5050                  # API info"
-echo "   http://localhost:5050/health           # Health check"
-echo "   http://localhost:5050/status           # Gateway status"
-echo "   http://localhost:5050/devices          # List devices"
-echo "   http://localhost:5050/devices/MAC      # Device details"
+echo "   http://localhost:5050/health    # Health check"
+echo "   http://localhost:5050/status    # Gateway status"
+echo "   http://localhost:5050/devices   # List devices"
 echo ""
 echo -e "${GREEN}Installation Locations:${NC}"
 echo "   Service: $INSTALL_DIR"
@@ -405,7 +558,9 @@ if [ "$INIT_SYSTEM" = "systemd" ]; then
     echo "   systemctl start/stop/restart/status $SERVICE_NAME"
 else
     echo "   /etc/init.d/$SERVICE_NAME start/stop/restart/status"
-    echo "   /etc/init.d/$SERVICE_NAME enable/disable (for auto-start)"
+    echo "   /etc/init.d/$SERVICE_NAME enable/disable (auto-start)"
 fi
 echo ""
+echo -e "${GREEN}========================================${NC}"
+echo -e "${BLUE}Tip: Run with --full-auto next time for zero-touch deployment!${NC}"
 echo -e "${GREEN}========================================${NC}\n"
