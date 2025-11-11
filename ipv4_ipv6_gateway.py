@@ -951,12 +951,25 @@ class GatewayService:
                         self.devices[mac] = device
                     self.logger.info("New device discovered: %s (IPv4: %s)", mac, ipv4)
 
-                    thread = threading.Thread(
-                        target=self._discover_addresses_for_device,
-                        args=(mac,),
-                        daemon=True,
-                    )
-                    thread.start()
+                    # Spawn discovery thread
+                    try:
+                        thread = threading.Thread(
+                            target=self._discover_addresses_for_device,
+                            args=(mac,),
+                            daemon=True,
+                            name=f"Discovery-{mac}",
+                        )
+                        thread.start()
+                        self.logger.info(
+                            f"Started discovery thread for {mac} (thread: {thread.name})"
+                        )
+                    except Exception as thread_error:
+                        self.logger.error(
+                            f"Failed to start discovery thread for {mac}: {thread_error}"
+                        )
+                        with self._devices_lock:
+                            if mac in self.devices:
+                                self.devices[mac].status = "error"
 
                 time.sleep(cfg.ARP_MONITOR_INTERVAL)
 
