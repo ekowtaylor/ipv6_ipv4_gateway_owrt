@@ -609,8 +609,12 @@ elif [ "$AUTO_START" = true ] || [ "$APPLY_NETWORK" = true ]; then
         echo ""
         echo "1. Review and apply network configuration:"
         echo "   cat $CONFIG_DIR/network-config.uci"
-        echo "   uci import < $CONFIG_DIR/network-config.uci"
+        echo "   cat $CONFIG_DIR/dhcp-config.uci"
+        echo "   uci import network < $CONFIG_DIR/network-config.uci"
+        echo "   uci import dhcp < $CONFIG_DIR/dhcp-config.uci"
+        echo "   uci commit"
         echo "   /etc/init.d/network restart"
+        echo "   /etc/init.d/dnsmasq restart"
         echo ""
     fi
 else
