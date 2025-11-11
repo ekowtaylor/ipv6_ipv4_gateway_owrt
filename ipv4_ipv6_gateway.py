@@ -699,17 +699,25 @@ class GatewayService:
         self.discovery_thread: Optional[threading.Thread] = None
         self.monitor_thread: Optional[threading.Thread] = None
 
-    def detect_wan_protocols(self) -> tuple:
+    def should_attempt_protocols(self) -> tuple:
         """
-        Detect available protocols on WAN interface (eth0).
-        Returns (has_ipv4, has_ipv6) tuple.
+        Determine if we should attempt DHCPv4 and/or DHCPv6.
+
+        Strategy: Always attempt both protocols. Let DHCP fail gracefully if not supported.
+        This avoids the chicken-and-egg problem where eth0 has no addresses yet.
+
+        Returns (attempt_ipv4, attempt_ipv6) tuple - both True by default.
         """
-        has_ipv4 = len(self.eth0.get_ipv4_addresses()) > 0
-        has_ipv6 = len(self.eth0.get_ipv6_addresses()) > 0
+        # Always attempt both protocols - this is a dual-stack gateway!
+        # If the network doesn't support one, DHCP will timeout/fail gracefully
+        attempt_ipv4 = True
+        attempt_ipv6 = True
 
-        self.logger.info(f"WAN protocols detected - IPv4: {has_ipv4}, IPv6: {has_ipv6}")
+        self.logger.info(
+            f"Will attempt - DHCPv4: {attempt_ipv4}, DHCPv6: {attempt_ipv6}"
+        )
 
-        return (has_ipv4, has_ipv6)
+        return (attempt_ipv4, attempt_ipv6)
 
     # ---- Public API used by REST layer ----
 
@@ -968,12 +976,12 @@ class GatewayService:
                     return
                 device.status = "discovering"
 
-            # Detect available protocols on WAN
-            has_ipv4, has_ipv6 = self.detect_wan_protocols()
+            # Determine which protocols to attempt
+            attempt_ipv4, attempt_ipv6 = self.should_attempt_protocols()
 
-            # Request IPv4 if available
-            if has_ipv4:
-                self.logger.info(f"Requesting DHCPv4 for {mac} (WAN has IPv4)")
+            # Request IPv4 if we should attempt it
+            if attempt_ipv4:
+                self.logger.info(f"Requesting DHCPv4 for {mac}")
                 ipv4_wan = self.dhcpv4_manager.request_ipv4_for_mac(mac)
 
                 with self._devices_lock:
@@ -984,11 +992,11 @@ class GatewayService:
                     elif device:
                         self.logger.warning(f"Failed to obtain IPv4 for {mac}")
             else:
-                self.logger.info(f"Skipping DHCPv4 for {mac} (no IPv4 on WAN)")
+                self.logger.info(f"Skipping DHCPv4 for {mac}")
 
-            # Request IPv6 if available
-            if has_ipv6:
-                self.logger.info(f"Requesting DHCPv6 for {mac} (WAN has IPv6)")
+            # Request IPv6 if we should attempt it
+            if attempt_ipv6:
+                self.logger.info(f"Requesting DHCPv6 for {mac}")
                 ipv6 = self.dhcpv6_manager.request_ipv6_for_mac(mac)
 
                 with self._devices_lock:
@@ -999,7 +1007,7 @@ class GatewayService:
                     elif device:
                         self.logger.warning(f"Failed to obtain IPv6 for {mac}")
             else:
-                self.logger.info(f"Skipping DHCPv6 for {mac} (no IPv6 on WAN)")
+                self.logger.info(f"Skipping DHCPv6 for {mac}")
 
             # Update device status
             with self._devices_lock:
