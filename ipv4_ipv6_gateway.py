@@ -785,7 +785,7 @@ class FirewallManager:
 
 
 class WANMonitor:
-    """Monitors WAN interface for network changes with debouncing"""
+    """Monitors WAN interface for network changes"""
 
     def __init__(self, interface: str):
         self.interface = interface
@@ -793,10 +793,6 @@ class WANMonitor:
         self.iface = NetworkInterface(interface)
         self.last_ipv4: Optional[List[str]] = None
         self.last_ipv6: Optional[List[str]] = None
-        self.last_change_time: Optional[float] = None  # Track last change time for debouncing
-        self.stable_ipv4: Optional[List[str]] = None  # IPs that have been stable
-        self.stable_ipv6: Optional[List[str]] = None
-        self.stable_since: Optional[float] = None  # When IPs became stable
 
     def get_current_addresses(self) -> tuple:
         """Get current IPv4 and IPv6 addresses on WAN interface"""
@@ -806,98 +802,42 @@ class WANMonitor:
 
     def check_for_changes(self) -> bool:
         """
-        Check if WAN network has changed with debouncing.
-
-        Debouncing logic:
-        1. IPs must be stable for WAN_CHANGE_STABLE_TIME before triggering change
-        2. Minimum WAN_CHANGE_MIN_INTERVAL between change triggers
-        3. Prevents rapid flip-flopping between two IPs
-
-        Returns True if network changed (and passed debounce), False otherwise.
+        Check if WAN network has changed.
+        Returns True if network changed, False otherwise.
         """
         current_ipv4, current_ipv6 = self.get_current_addresses()
-        current_time = time.time()
 
         # First time - just initialize
         if self.last_ipv4 is None and self.last_ipv6 is None:
             self.last_ipv4 = current_ipv4
             self.last_ipv6 = current_ipv6
-            self.stable_ipv4 = current_ipv4
-            self.stable_ipv6 = current_ipv6
-            self.stable_since = current_time
             self.logger.info(
                 f"WAN monitor initialized - IPv4: {current_ipv4}, IPv6: {current_ipv6}"
             )
             return False
 
-        # Check if IPs changed from last check
+        # Check for changes
         ipv4_changed = set(current_ipv4) != set(self.last_ipv4 or [])
         ipv6_changed = set(current_ipv6) != set(self.last_ipv6 or [])
 
-        # Update last seen IPs
-        self.last_ipv4 = current_ipv4
-        self.last_ipv6 = current_ipv6
-
-        # If IPs changed from stable state, reset stability timer
-        if (set(current_ipv4) != set(self.stable_ipv4 or []) or
-            set(current_ipv6) != set(self.stable_ipv6 or [])):
-
-            # IPs are fluctuating
-            if self.stable_since is None or (current_time - self.stable_since) > cfg.WAN_CHANGE_STABLE_TIME:
-                # Reset stability timer
-                self.stable_since = current_time
-                self.logger.debug(
-                    f"WAN IPs fluctuating - resetting stability timer "
-                    f"(IPv4: {current_ipv4}, IPv6: {current_ipv6})"
-                )
-            return False
-
-        # IPs are same as stable IPs - check if they've been stable long enough
-        time_since_stable = current_time - (self.stable_since or current_time)
-
-        if time_since_stable < cfg.WAN_CHANGE_STABLE_TIME:
-            # Not stable long enough yet
-            self.logger.debug(
-                f"WAN IPs stabilizing... ({time_since_stable:.0f}s / {cfg.WAN_CHANGE_STABLE_TIME}s)"
-            )
-            return False
-
-        # IPs have been stable - check if they're different from what we reported last time
-        stable_ipv4_changed = set(current_ipv4) != set(self.stable_ipv4 or [])
-        stable_ipv6_changed = set(current_ipv6) != set(self.stable_ipv6 or [])
-
-        if not (stable_ipv4_changed or stable_ipv6_changed):
-            # No actual change from stable state
-            return False
-
-        # Check debounce timer (minimum time between triggers)
-        if self.last_change_time is not None:
-            time_since_last_change = current_time - self.last_change_time
-            if time_since_last_change < cfg.WAN_CHANGE_MIN_INTERVAL:
+        if ipv4_changed or ipv6_changed:
+            self.logger.warning("WAN network change detected!")
+            if ipv4_changed:
                 self.logger.warning(
-                    f"WAN change detected but debounce active "
-                    f"({time_since_last_change:.0f}s / {cfg.WAN_CHANGE_MIN_INTERVAL}s) - ignoring"
+                    f"  IPv4 changed: {self.last_ipv4} → {current_ipv4}"
                 )
-                return False
+            if ipv6_changed:
+                self.logger.warning(
+                    f"  IPv6 changed: {self.last_ipv6} → {current_ipv6}"
+                )
 
-        # WAN has genuinely changed and passed all debounce checks!
-        self.logger.warning("WAN network change detected (debounce passed)!")
-        if stable_ipv4_changed:
-            self.logger.warning(
-                f"  IPv4 changed: {self.stable_ipv4} → {current_ipv4}"
-            )
-        if stable_ipv6_changed:
-            self.logger.warning(
-                f"  IPv6 changed: {self.stable_ipv6} → {current_ipv6}"
-            )
+            # Update last known addresses
+            self.last_ipv4 = current_ipv4
+            self.last_ipv6 = current_ipv6
 
-        # Update stable state and change time
-        self.stable_ipv4 = current_ipv4
-        self.stable_ipv6 = current_ipv6
-        self.last_change_time = current_time
-        self.stable_since = current_time
+            return True
 
-        return True
+        return False
 
 
 class GatewayService:

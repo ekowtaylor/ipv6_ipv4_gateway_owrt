@@ -680,21 +680,7 @@ WAN_MONITOR_INTERVAL = 15     # Seconds between checks
 
 # Wait before re-discovery
 WAN_CHANGE_REDISCOVERY_DELAY = 5  # Seconds to wait after network change
-
-# Debouncing (prevents rapid re-triggering)
-WAN_CHANGE_MIN_INTERVAL = 120      # Minimum 2 minutes between change triggers
-WAN_CHANGE_STABLE_TIME = 30        # IPs must be stable 30s before triggering
 ```
-
-**Debouncing prevents infinite loops:**
-
-The WAN monitor includes smart debouncing to prevent rapid flip-flopping between IPs:
-
-1. **Stability Check**: IPs must be stable for 30 seconds before triggering change
-2. **Minimum Interval**: At least 2 minutes must pass between change triggers
-3. **Fluctuation Detection**: Logs fluctuating IPs but doesn't trigger re-discovery
-
-**This prevents loops when DHCP assigns different IPs on each request!** ✅
 
 **Example scenario:**
 ```bash
