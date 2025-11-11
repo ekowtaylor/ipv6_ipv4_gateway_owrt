@@ -844,17 +844,43 @@ class SocatProxyManager:
                     # Process died, remove it
                     del self.proxies[mac][gateway_port]
 
-            # socat command:
-            # TCP6-LISTEN:port,fork,reuseaddr → TCP4:device_ip:port
-            # - TCP6-LISTEN: Listen on IPv6
-            # - fork: Handle multiple connections
-            # - reuseaddr: Allow quick restart
-            # - TCP4: Connect to IPv4
-            socat_cmd = [
-                cfg.CMD_SOCAT,
-                f"TCP6-LISTEN:{gateway_port},fork,reuseaddr",
-                f"TCP4:{device_ipv4}:{device_port}"
-            ]
+            # Determine if this port needs special protocol handling
+            # Telnet ports: 23, 2323 (and any port that maps to 23)
+            is_telnet_port = (device_port == 23 or gateway_port == 2323)
+
+            # HTTP/HTTPS ports: 80, 443, 8080, 8443 (and any port that maps to 80/443)
+            is_http_port = (device_port in [80, 443] or gateway_port in [8080, 8443])
+
+            if is_telnet_port:
+                # For telnet, use rawer mode to handle protocol negotiation
+                # - rawer: More transparent for binary protocols
+                # - ignoreeof: Don't close on EOF from one side
+                socat_cmd = [
+                    cfg.CMD_SOCAT,
+                    f"TCP6-LISTEN:{gateway_port},fork,reuseaddr,rawer,ignoreeof",
+                    f"TCP4:{device_ipv4}:{device_port},rawer,ignoreeof"
+                ]
+            elif is_http_port:
+                # For HTTP/HTTPS, use options to handle keep-alive and binary data
+                # - nodelay: Disable Nagle's algorithm for better HTTP performance
+                # - keepalive: Enable TCP keep-alive for persistent connections
+                # - ignoreeof: Don't close on EOF (HTTP/1.1 persistent connections)
+                socat_cmd = [
+                    cfg.CMD_SOCAT,
+                    f"TCP6-LISTEN:{gateway_port},fork,reuseaddr,nodelay,keepalive,ignoreeof",
+                    f"TCP4:{device_ipv4}:{device_port},nodelay,keepalive,ignoreeof"
+                ]
+            else:
+                # Standard TCP proxy for other services (SSH, VNC, RDP, etc.)
+                # - TCP6-LISTEN: Listen on IPv6
+                # - fork: Handle multiple connections
+                # - reuseaddr: Allow quick restart
+                # - TCP4: Connect to IPv4
+                socat_cmd = [
+                    cfg.CMD_SOCAT,
+                    f"TCP6-LISTEN:{gateway_port},fork,reuseaddr",
+                    f"TCP4:{device_ipv4}:{device_port}"
+                ]
 
             # Start socat in background
             process = subprocess.Popen(
@@ -877,8 +903,16 @@ class SocatProxyManager:
                 self.proxies[mac] = {}
             self.proxies[mac][gateway_port] = process
 
+            # Determine proxy type for logging
+            if is_telnet_port:
+                proxy_type = "telnet-aware"
+            elif is_http_port:
+                proxy_type = "http-aware"
+            else:
+                proxy_type = "standard"
+
             self.logger.info(
-                f"IPv6→IPv4 proxy: [::]:{ gateway_port} → {device_ipv4}:{device_port} "
+                f"IPv6→IPv4 proxy ({proxy_type}): [::]:{gateway_port} → {device_ipv4}:{device_port} "
                 f"(PID: {process.pid})"
             )
             return True

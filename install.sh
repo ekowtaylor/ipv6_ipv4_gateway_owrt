@@ -141,6 +141,7 @@ else
     echo "  - ip-full or iproute2"
     echo "  - odhcp6c"
     echo "  - iptables and ip6tables"
+    echo "  - socat (for IPv6→IPv4 proxying)"
     echo "  - net-tools (optional, provides 'arp')"
     echo "  - 464xlat (for IPv4/IPv6 translation)"
 fi

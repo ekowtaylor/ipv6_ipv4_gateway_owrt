@@ -189,7 +189,7 @@ def validate_config() -> bool:
         Path(path).mkdir(parents=True, exist_ok=True)
 
     # Resolve commands (preferred path or PATH-based fallback)
-    global CMD_IP, CMD_ARP, CMD_ODHCP6C, CMD_UDHCPC, CMD_IPTABLES, CMD_IP6TABLES, CMD_SYSCTL
+    global CMD_IP, CMD_ARP, CMD_ODHCP6C, CMD_UDHCPC, CMD_IPTABLES, CMD_IP6TABLES, CMD_SYSCTL, CMD_SOCAT
 
     CMD_IP = _find_command(CMD_IP)
     CMD_ARP = _find_command(CMD_ARP)
@@ -198,6 +198,7 @@ def validate_config() -> bool:
     CMD_IPTABLES = _find_command(CMD_IPTABLES)
     CMD_IP6TABLES = _find_command(CMD_IP6TABLES)
     CMD_SYSCTL = _find_command(CMD_SYSCTL)
+    CMD_SOCAT = _find_command(CMD_SOCAT)
 
     # Check required commands exist and provide helpful error messages
     commands = {
@@ -209,9 +210,12 @@ def validate_config() -> bool:
         "sysctl": CMD_SYSCTL,
     }
 
-    # Note: 'arp' is optional since we can use 'ip neigh' as a fallback
+    # Note: 'arp' and 'socat' are optional
+    # - arp: we can use 'ip neigh' as a fallback
+    # - socat: only needed if ENABLE_IPV6_TO_IPV4_PROXY is True
     optional_commands = {
         "arp": CMD_ARP,
+        "socat": CMD_SOCAT,
     }
 
     missing_commands = []
@@ -229,10 +233,20 @@ def validate_config() -> bool:
         error_msg += "\nOr update paths in gateway_config.py to match your system."
         raise RuntimeError(error_msg)
 
-    # Warn about optional commands
+    # Warn about optional commands if features are enabled
     for name, path in optional_commands.items():
         if not os.path.exists(path):
-            # Not an error, just log that fallback will be used
+            if name == "socat" and ENABLE_IPV6_TO_IPV4_PROXY:
+                # socat is required if IPv6→IPv4 proxying is enabled
+                raise RuntimeError(
+                    f"socat command not found (looked for: {path})\n"
+                    f"IPv6→IPv4 proxying is enabled (ENABLE_IPV6_TO_IPV4_PROXY=True) but socat is not installed.\n"
+                    f"\nInstall with:\n"
+                    f"  opkg update\n"
+                    f"  opkg install socat\n"
+                    f"\nOr disable IPv6→IPv4 proxying by setting ENABLE_IPV6_TO_IPV4_PROXY=False in gateway_config.py"
+                )
+            # Not an error for other optional commands, just log that fallback will be used
             pass
 
     return True
