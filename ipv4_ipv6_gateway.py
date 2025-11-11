@@ -784,6 +784,176 @@ class FirewallManager:
         return True
 
 
+class SocatProxyManager:
+    """
+    Manages socat-based IPv6→IPv4 proxying for devices.
+
+    When an IPv4-only device is discovered, this creates socat proxies that:
+    - Listen on IPv6 ports (on gateway's WAN IPv6 address)
+    - Forward to IPv4 ports (on device's LAN IPv4 address)
+
+    Example:
+    IPv6 client → [gateway IPv6]:23 → socat → 192.168.1.128:23 → device
+    """
+
+    def __init__(self):
+        self.logger = logging.getLogger("SocatProxyManager")
+        self.proxies: Dict[str, Dict[int, subprocess.Popen]] = {}  # {mac: {port: process}}
+        self._lock = threading.Lock()
+
+    def start_proxy_for_device(self, mac: str, device_ipv4: str, port_map: Dict[int, int]) -> bool:
+        """
+        Start socat proxies for all ports for a device.
+
+        Args:
+            mac: Device MAC address
+            device_ipv4: Device's LAN IPv4 address (e.g., "192.168.1.128")
+            port_map: Port mapping {gateway_port: device_port}
+
+        Returns:
+            True if all proxies started successfully
+        """
+        self.logger.info(f"Starting IPv6→IPv4 proxies for device {device_ipv4} (MAC: {mac})")
+
+        with self._lock:
+            if mac not in self.proxies:
+                self.proxies[mac] = {}
+
+            success_count = 0
+            for gateway_port, device_port in port_map.items():
+                if self._start_single_proxy(mac, device_ipv4, gateway_port, device_port):
+                    success_count += 1
+
+            self.logger.info(
+                f"Started {success_count}/{len(port_map)} IPv6→IPv4 proxies for {mac}"
+            )
+            return success_count > 0
+
+    def _start_single_proxy(self, mac: str, device_ipv4: str, gateway_port: int, device_port: int) -> bool:
+        """Start a single socat proxy for one port"""
+        try:
+            # Check if proxy already running for this port
+            if gateway_port in self.proxies.get(mac, {}):
+                existing_process = self.proxies[mac][gateway_port]
+                if existing_process.poll() is None:  # Still running
+                    self.logger.debug(
+                        f"Proxy already running for {mac} port {gateway_port}"
+                    )
+                    return True
+                else:
+                    # Process died, remove it
+                    del self.proxies[mac][gateway_port]
+
+            # socat command:
+            # TCP6-LISTEN:port,fork,reuseaddr → TCP4:device_ip:port
+            # - TCP6-LISTEN: Listen on IPv6
+            # - fork: Handle multiple connections
+            # - reuseaddr: Allow quick restart
+            # - TCP4: Connect to IPv4
+            socat_cmd = [
+                cfg.CMD_SOCAT,
+                f"TCP6-LISTEN:{gateway_port},fork,reuseaddr",
+                f"TCP4:{device_ipv4}:{device_port}"
+            ]
+
+            # Start socat in background
+            process = subprocess.Popen(
+                socat_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True  # Detach from parent
+            )
+
+            # Wait a moment to see if it crashes immediately
+            time.sleep(0.1)
+            if process.poll() is not None:
+                self.logger.error(
+                    f"Socat proxy failed to start for {mac} port {gateway_port}"
+                )
+                return False
+
+            # Success! Store the process
+            if mac not in self.proxies:
+                self.proxies[mac] = {}
+            self.proxies[mac][gateway_port] = process
+
+            self.logger.info(
+                f"IPv6→IPv4 proxy: [::]:{ gateway_port} → {device_ipv4}:{device_port} "
+                f"(PID: {process.pid})"
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to start socat proxy for {mac} port {gateway_port}: {e}"
+            )
+            return False
+
+    def stop_proxies_for_device(self, mac: str) -> None:
+        """Stop all socat proxies for a device"""
+        with self._lock:
+            if mac not in self.proxies:
+                return
+
+            self.logger.info(f"Stopping IPv6→IPv4 proxies for {mac}")
+
+            for port, process in list(self.proxies[mac].items()):
+                try:
+                    if process.poll() is None:  # Still running
+                        process.terminate()
+                        try:
+                            process.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        self.logger.debug(f"Stopped proxy for {mac} port {port}")
+                except Exception as e:
+                    self.logger.error(f"Error stopping proxy for {mac} port {port}: {e}")
+
+            del self.proxies[mac]
+
+    def stop_all_proxies(self) -> None:
+        """Stop all socat proxies"""
+        with self._lock:
+            self.logger.info("Stopping all IPv6→IPv4 proxies")
+            for mac in list(self.proxies.keys()):
+                self.stop_proxies_for_device(mac)
+
+    def get_proxy_status(self, mac: Optional[str] = None) -> Dict:
+        """Get status of proxies (for monitoring/debugging)"""
+        with self._lock:
+            if mac:
+                # Status for specific device
+                if mac not in self.proxies:
+                    return {"mac": mac, "proxies": {}, "running": False}
+
+                proxies_status = {}
+                for port, process in self.proxies[mac].items():
+                    proxies_status[port] = {
+                        "pid": process.pid,
+                        "running": process.poll() is None
+                    }
+
+                return {
+                    "mac": mac,
+                    "proxies": proxies_status,
+                    "running": len(proxies_status) > 0
+                }
+            else:
+                # Status for all devices
+                all_status = {}
+                for mac, ports in self.proxies.items():
+                    proxies_status = {}
+                    for port, process in ports.items():
+                        proxies_status[port] = {
+                            "pid": process.pid,
+                            "running": process.poll() is None
+                        }
+                    all_status[mac] = proxies_status
+
+                return all_status
+
+
 class WANMonitor:
     """Monitors WAN interface for network changes"""
 
@@ -852,6 +1022,7 @@ class GatewayService:
         self.dhcpv4_manager = DHCPv4Manager(interface=cfg.ETH0_INTERFACE)
         self.device_store = DeviceStore(config_dir)
         self.firewall = FirewallManager()
+        self.socat_proxy = SocatProxyManager() if cfg.ENABLE_IPV6_TO_IPV4_PROXY else None
         self.eth0 = NetworkInterface(cfg.ETH0_INTERFACE)
         self.eth1 = NetworkInterface(cfg.ETH1_INTERFACE)
 
@@ -1095,6 +1266,10 @@ class GatewayService:
         if self.api_server:
             self.api_server.stop()
 
+        # Stop all socat proxies
+        if self.socat_proxy:
+            self.socat_proxy.stop_all_proxies()
+
         with self._devices_lock:
             self.device_store.save_devices(self.devices)
 
@@ -1224,9 +1399,14 @@ class GatewayService:
                         if device.ipv4_address:
                             self._setup_auto_port_forwarding_ipv4(device.ipv4_address, mac)
 
-                        # IPv6 port forwarding (if device has WAN IPv6)
-                        if device.ipv6_address:
-                            self._setup_auto_port_forwarding_ipv6(device.ipv6_address, mac)
+                        # IPv6→IPv4 proxying (if enabled and device is IPv4-only)
+                        if cfg.ENABLE_IPV6_TO_IPV4_PROXY and self.socat_proxy and device.ipv4_address:
+                            # Start socat proxies to allow IPv6 clients to access IPv4-only device
+                            self.socat_proxy.start_proxy_for_device(
+                                mac=mac,
+                                device_ipv4=device.ipv4_address,
+                                port_map=cfg.AUTO_PORT_FORWARDS
+                            )
                 else:
                     device.status = "failed"
                     self.logger.warning(
@@ -1332,27 +1512,34 @@ class GatewayService:
 
     def _setup_auto_port_forwarding_ipv6(self, device_ipv6: str, mac: str) -> None:
         """
-        Setup IPv6 port forwarding using ip6tables.
-        Forwards common ports from gateway's WAN IPv6 to device's WAN IPv6.
+        Setup IPv6 firewall rules for direct device access.
 
-        Note: For IPv6, we're forwarding to the device's WAN IPv6 address
-        (not LAN IPv4), since the device already has a routable IPv6 address.
+        NOTE: Unlike IPv4, IPv6 does NOT use port forwarding/translation!
+        The device has a globally routable IPv6 address, so clients access
+        the device's ports directly (80, 23, 22, etc.) not translated ports.
+
+        This method only adds firewall FORWARD rules to ensure traffic can reach
+        the device. No port translation occurs.
+
+        Access examples:
+        - curl "http://[device_ipv6]:80"       (NOT :8080)
+        - telnet device_ipv6 23                (NOT :2323)
+        - ssh user@device_ipv6                 (port 22, NOT :2222)
         """
-        self.logger.info(f"Setting up IPv6 port forwarding for {device_ipv6} (MAC: {mac})")
+        self.logger.info(f"Setting up IPv6 firewall rules for {device_ipv6} (MAC: {mac})")
 
         wan_interface = cfg.ETH0_INTERFACE
 
         for gateway_port, device_port in cfg.AUTO_PORT_FORWARDS.items():
             try:
-                # Check if rule already exists
+                # Check if FORWARD rule exists for this device_port
                 check_cmd = [
                     cfg.CMD_IP6TABLES,
                     "-C",  # Check
                     "FORWARD",
-                    "-i", wan_interface,
                     "-p", "tcp",
                     "-d", device_ipv6,
-                    "--dport", str(device_port),
+                    "--dport", str(device_port),  # Direct port, no translation
                     "-j", "ACCEPT"
                 ]
 
@@ -1360,11 +1547,10 @@ class GatewayService:
 
                 if check_result.returncode != 0:
                     # Rule doesn't exist, add it
-                    # FORWARD rule: Allow traffic to device's IPv6
+                    # FORWARD rule: Allow traffic to device's real port
                     forward_cmd = [
                         cfg.CMD_IP6TABLES,
                         "-A", "FORWARD",
-                        "-i", wan_interface,
                         "-p", "tcp",
                         "-d", device_ipv6,
                         "--dport", str(device_port),
@@ -1383,32 +1569,21 @@ class GatewayService:
                     ]
                     subprocess.run(return_cmd, check=True, capture_output=True)
 
-                    # INPUT rule: Allow traffic destined for gateway itself
-                    input_cmd = [
-                        cfg.CMD_IP6TABLES,
-                        "-A", "INPUT",
-                        "-i", wan_interface,
-                        "-p", "tcp",
-                        "--dport", str(gateway_port),
-                        "-j", "ACCEPT"
-                    ]
-                    subprocess.run(input_cmd, check=True, capture_output=True)
-
                     self.logger.info(
-                        f"IPv6 port forward: [gateway]:{gateway_port} → [{device_ipv6}]:{device_port}"
+                        f"IPv6 firewall: Allow traffic to [{device_ipv6}]:{device_port}"
                     )
                 else:
                     self.logger.debug(
-                        f"IPv6 port forward already exists: [gateway]:{gateway_port} → [{device_ipv6}]:{device_port}"
+                        f"IPv6 firewall rule already exists for [{device_ipv6}]:{device_port}"
                     )
 
             except subprocess.CalledProcessError as e:
                 self.logger.warning(
-                    f"Failed to setup IPv6 port forward {gateway_port}→{device_port}: {e}"
+                    f"Failed to setup IPv6 firewall rule for port {device_port}: {e}"
                 )
             except Exception as e:
                 self.logger.error(
-                    f"Error setting up IPv6 port forward {gateway_port}→{device_port}: {e}"
+                    f"Error setting up IPv6 firewall rule for port {device_port}: {e}"
                 )
 
     def _monitoring_loop(self) -> None:

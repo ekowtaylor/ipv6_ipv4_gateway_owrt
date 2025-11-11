@@ -94,6 +94,12 @@ AUTO_PORT_FORWARDS = {
 # Port forwarding will use device's LAN IP (192.168.1.x)
 # Access from WAN: gateway_wan_ip:gateway_port → device:device_port
 
+# IPv6→IPv4 Proxying (for IPv4-only devices)
+# Uses socat to proxy IPv6 connections to IPv4 devices
+ENABLE_IPV6_TO_IPV4_PROXY = True   # Enable socat-based IPv6→IPv4 proxying
+SOCAT_PROXY_BIND_IPV6 = "::"       # Bind to all IPv6 addresses (:: = any IPv6)
+SOCAT_PROXY_LOG_DIR = "/var/log/socat"  # Directory for socat logs (optional)
+
 # Debugging
 DEBUG_MODE = False
 DEBUG_ARP_QUERIES = False
@@ -124,6 +130,7 @@ CMD_UDHCPC = "/sbin/udhcpc"  # busybox DHCPv4 client on OpenWrt
 CMD_IPTABLES = "/usr/sbin/iptables"
 CMD_IP6TABLES = "/usr/sbin/ip6tables"
 CMD_SYSCTL = "/sbin/sysctl"
+CMD_SOCAT = "/usr/bin/socat"  # socat for IPv6→IPv4 proxying
 
 # Paths to ensure exist
 PATHS_TO_CREATE: List[str] = [

@@ -241,12 +241,12 @@ tail -f /var/log/ipv4-ipv6-gateway.log
 
 ## 🌐 Port Forwarding
 
-**NEW: Automatic port forwarding now supports BOTH IPv4 and IPv6!**
+**Automatic port forwarding with IPv6→IPv4 proxying for seamless access!**
 
-When a device is discovered and successfully configured, the gateway automatically forwards common ports:
+When a device is discovered and successfully configured, the gateway automatically sets up port forwarding:
 
-- **IPv4**: From gateway WAN to device LAN IP (NAT/DNAT)
-- **IPv6**: From gateway WAN to device WAN IPv6 (direct forwarding)
+- **IPv4**: From gateway WAN to device LAN IP (NAT/DNAT via iptables)
+- **IPv6→IPv4**: From IPv6 clients to IPv4-only devices (socat proxy)
 
 ### Automatic Port Forwarding (Default)
 
@@ -261,50 +261,61 @@ By default, when a device connects and gets configured, these ports are automati
 | 5900 | 5900 | VNC |
 | 3389 | 3389 | RDP |
 
-**This happens automatically for both IPv4 and IPv6 - no manual setup needed!** ✨
+**This happens automatically for both IPv4 and IPv6 clients - no manual setup needed!** ✨
 
 ### How It Works
 
 #### **IPv4 Port Forwarding (NAT)**
 ```
-Client (IPv4) → Gateway WAN:8080 → NAT → Device LAN:80
-Example: curl http://192.168.8.128:8080  # Gateway WAN IP
+IPv4 Client → Gateway WAN:8080 → NAT (iptables) → Device LAN:80
+Example: curl http://100.124.66.225:8080  # Gateway WAN IPv4
 ```
 
-#### **IPv6 Port Forwarding (Direct)**
+#### **IPv6→IPv4 Proxying (socat) - NEW!**
 ```
-Client (IPv6) → Gateway WAN:8080 → FORWARD → Device WAN IPv6:80
-Example: curl http://[2001:db8::1234]:80  # Device's actual IPv6
+IPv6 Client → Gateway WAN IPv6:23 → socat proxy → Device LAN:80
+Example: telnet 2620:10d:c050:100:46b7:d0ff:fea6:6dfc 23
 ```
 
 **Key Difference:**
-- **IPv4**: Uses NAT/DNAT (device has private LAN IP)
-- **IPv6**: Direct forwarding (device has routable WAN IPv6)
+- **IPv4 NAT**: Device traffic goes through iptables NAT
+- **IPv6→IPv4 Proxy**: socat proxies IPv6 connections to IPv4-only devices
+
+**Why needed?** Most devices are IPv4-only and have no IPv6 stack. The gateway's WAN
+IPv6 address (obtained via MAC spoofing) is on the gateway itself, not the device.
+socat bridges IPv6 clients → IPv4-only devices seamlessly.
 
 ### Access from Client
 
 **From WAN network (IPv4 client):**
 ```bash
+# Get gateway's WAN IPv4
+gateway-devices-direct
+# Shows gateway WAN IPv4: 100.124.66.225
+
 # Telnet to device (automatic port forward)
-telnet 192.168.8.128 2323  # Gateway WAN IPv4:2323 → Device LAN:23
+telnet 100.124.66.225 2323  # Gateway WAN IPv4:2323 → Device LAN:23
 
 # HTTP access
-curl http://192.168.8.128:8080  # Gateway WAN IPv4:8080 → Device LAN:80
+curl http://100.124.66.225:8080  # Gateway WAN IPv4:8080 → Device LAN:80
 
 # SSH access
-ssh -p 2222 user@192.168.8.128  # Gateway WAN IPv4:2222 → Device LAN:22
+ssh -p 2222 user@100.124.66.225  # Gateway WAN IPv4:2222 → Device LAN:22
 ```
 
-**From WAN network (IPv6 client):**
+**From WAN network (IPv6 client) - NEW!:**
 ```bash
-# Get device's IPv6 from gateway
+# Get gateway's WAN IPv6 (obtained by spoofing device MAC)
 gateway-devices-direct
-# Shows: "ipv6_address": "2001:db8::1234"
+# Shows: "ipv6_address": "2620:10d:c050:100:46b7:d0ff:fea6:6dfc"
 
-# Access device directly via IPv6
-curl http://[2001:db8::1234]:80  # Direct to device's WAN IPv6:80
-telnet 2001:db8::1234 23         # Direct to device's WAN IPv6:23
-ssh user@2001:db8::1234          # Direct to device's WAN IPv6:22
+# Access device via IPv6 → socat proxies to IPv4 device!
+telnet 2620:10d:c050:100:46b7:d0ff:fea6:6dfc 23      # → Device:23 ✅
+curl http://[2620:10d:c050:100:46b7:d0ff:fea6:6dfc]:80  # → Device:80 ✅
+ssh -p 22 user@2620:10d:c050:100:46b7:d0ff:fea6:6dfc   # → Device:22 ✅
+
+# Note: This works even though device is IPv4-only!
+# socat transparently proxies IPv6 → IPv4
 ```
 
 **From LAN side (gateway itself):**

@@ -87,6 +87,18 @@ if [ "$INIT_SYSTEM" = "systemd" ] && [ -f "$SYSTEMD_SERVICE" ]; then
     systemctl daemon-reload 2>/dev/null || true
 fi
 
+# Kill any remaining socat processes (IPv6→IPv4 proxies)
+echo -e "${BLUE}- Stopping IPv6→IPv4 socat proxies...${NC}"
+SOCAT_PIDS=$(ps | grep -E 'socat.*TCP6-LISTEN.*TCP4:' | grep -v grep | awk '{print $1}')
+if [ -n "$SOCAT_PIDS" ]; then
+    echo "$SOCAT_PIDS" | while read pid; do
+        kill "$pid" 2>/dev/null || true
+    done
+    echo -e "${GREEN}✓ Stopped $(echo "$SOCAT_PIDS" | wc -l) socat proxy processes${NC}"
+else
+    echo -e "${BLUE}  (No socat proxies found)${NC}"
+fi
+
 echo -e "${GREEN}✓ Service stopped and disabled (where applicable)${NC}\n"
 
 # --- Step 2: Backup everything relevant --------------------------------------

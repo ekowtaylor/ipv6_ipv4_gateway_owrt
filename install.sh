@@ -116,6 +116,10 @@ if command -v opkg >/dev/null 2>&1; then
     opkg install odhcp6c 2>/dev/null || echo -e "${YELLOW}⚠ odhcp6c installation failed or already installed${NC}"
     opkg install iptables ip6tables 2>/dev/null || echo -e "${YELLOW}⚠ iptables installation failed or already installed${NC}"
 
+    # IPv6→IPv4 proxy (required for IPv6 clients to access IPv4-only devices)
+    echo -e "${BLUE}Installing socat for IPv6→IPv4 proxying...${NC}"
+    opkg install socat 2>/dev/null || echo -e "${YELLOW}⚠ socat installation failed or already installed${NC}"
+
     # Optional but recommended: legacy tools for compatibility
     echo -e "${BLUE}Installing optional compatibility tools...${NC}"
     opkg install net-tools 2>/dev/null || echo -e "${YELLOW}⚠ net-tools (provides 'arp' command) not available - will use 'ip neigh' instead${NC}"
