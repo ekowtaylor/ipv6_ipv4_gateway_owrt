@@ -173,14 +173,38 @@ cp gateway_api_server.py "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/ipv4_ipv6_gateway.py"
 echo -e "${GREEN}✓ Python files installed to $INSTALL_DIR${NC}\n"
 
-# Step 3.5: Copy diagnostic script (if available)
-echo -e "${YELLOW}Step 3.5: Installing diagnostic script...${NC}"
+# Step 3.5: Copy diagnostic and direct helper scripts (if available)
+echo -e "${YELLOW}Step 3.5: Installing diagnostic and direct helper scripts...${NC}"
 if [ -f "diagnose-and-fix.sh" ]; then
     cp diagnose-and-fix.sh /usr/bin/gateway-diagnose
     chmod +x /usr/bin/gateway-diagnose
     echo -e "${GREEN}✓ Diagnostic script installed to /usr/bin/gateway-diagnose${NC}"
 else
     echo -e "${YELLOW}⚠ diagnose-and-fix.sh not found, skipping${NC}"
+fi
+
+if [ -f "gateway-status-direct.sh" ]; then
+    cp gateway-status-direct.sh /usr/bin/gateway-status-direct
+    chmod +x /usr/bin/gateway-status-direct
+    echo -e "${GREEN}✓ Direct status script installed to /usr/bin/gateway-status-direct (works without API)${NC}"
+else
+    echo -e "${YELLOW}⚠ gateway-status-direct.sh not found, skipping${NC}"
+fi
+
+if [ -f "gateway-devices-direct.sh" ]; then
+    cp gateway-devices-direct.sh /usr/bin/gateway-devices-direct
+    chmod +x /usr/bin/gateway-devices-direct
+    echo -e "${GREEN}✓ Direct devices script installed to /usr/bin/gateway-devices-direct (works without API)${NC}"
+else
+    echo -e "${YELLOW}⚠ gateway-devices-direct.sh not found, skipping${NC}"
+fi
+
+if [ -f "setup-port-forwarding.sh" ]; then
+    cp setup-port-forwarding.sh /usr/bin/gateway-port-forward
+    chmod +x /usr/bin/gateway-port-forward
+    echo -e "${GREEN}✓ Port forwarding script installed to /usr/bin/gateway-port-forward${NC}"
+else
+    echo -e "${YELLOW}⚠ setup-port-forwarding.sh not found, skipping${NC}"
 fi
 echo ""
 
@@ -445,10 +469,10 @@ if [ -x "/etc/init.d/$SERVICE_NAME" ]; then
 fi
 echo ""
 
-# Step 9: Create helper scripts (curl-or-wget)
+# Step 9: Create helper scripts (API-based and direct)
 echo -e "${YELLOW}Step 9: Creating helper scripts...${NC}"
 
-# Status script
+# Status script (API-based, requires network)
 cat > /usr/bin/gateway-status << 'EOF'
 #!/bin/sh
 # Try multiple hosts to find working API endpoint
@@ -641,6 +665,7 @@ if [ "$FULL_AUTO" = true ]; then
     echo -e "${YELLOW}Quick Commands:${NC}"
     echo "   gateway-status          # Check status"
     echo "   gateway-devices         # List devices"
+    echo "   gateway-port-forward quick-device 192.168.1.100  # Setup port forwarding"
     echo "   tail -f /var/log/ipv4-ipv6-gateway.log  # View logs"
     echo ""
 elif [ "$AUTO_START" = true ] || [ "$APPLY_NETWORK" = true ]; then

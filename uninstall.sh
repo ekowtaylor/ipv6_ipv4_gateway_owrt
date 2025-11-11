@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # uninstall.sh — Safely uninstall the IPv4↔IPv6 Gateway Service
-# and clean up all installed components.
+# and clean up all installed componenso ts.
 #
 # Default:
 #   - Stops and disables the service
@@ -220,14 +220,18 @@ fi
 # --- Step 4: Remove installed files ------------------------------------------
 echo -e "${YELLOW}Step 4: Removing installed files...${NC}"
 
-rm -rf "$INSTALL_DIR"           || true
-rm -rf "$CONFIG_DIR"            || true
-rm -f  "$INIT_SCRIPT"           || true
-rm -f  "$SYSTEMD_SERVICE"       || true
-rm -f  "$LOG_FILE"              || true
-rm -rf "$RUN_DIR"               || true
-rm -f  /usr/bin/gateway-status  || true
-rm -f  /usr/bin/gateway-devices || true
+rm -rf "$INSTALL_DIR"                || true
+rm -rf "$CONFIG_DIR"                 || true
+rm -f  "$INIT_SCRIPT"                || true
+rm -f  "$SYSTEMD_SERVICE"            || true
+rm -f  "$LOG_FILE"                   || true
+rm -rf "$RUN_DIR"                    || true
+rm -f  /usr/bin/gateway-status       || true
+rm -f  /usr/bin/gateway-devices      || true
+rm -f  /usr/bin/gateway-status-direct   || true
+rm -f  /usr/bin/gateway-devices-direct  || true
+rm -f  /usr/bin/gateway-diagnose     || true
+rm -f  /usr/bin/gateway-port-forward || true
 
 echo -e "${GREEN}✓ Service, configs, logs, and helper scripts removed${NC}\n"
 

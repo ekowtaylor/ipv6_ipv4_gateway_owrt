@@ -13,14 +13,11 @@ A Python-based service that automatically discovers devices on eth1, learns thei
 ## 📖 Table of Contents
 
 - [Overview](#-overview)
-- [Use Case](#-use-case)
-- [Features](#-features)
-- [Architecture](#-architecture)
 - [Quick Start](#-quick-start)
+- [Features](#-features)
 - [How It Works](#-how-it-works)
-- [Supported Networks](#-supported-network-types)
 - [Deployment](#-deployment)
-- [Usage](#-usage)
+- [Port Forwarding](#-port-forwarding)
 - [Configuration](#️-configuration)
 - [Monitoring](#-monitoring--management)
 - [Troubleshooting](#-troubleshooting)
@@ -32,86 +29,21 @@ A Python-based service that automatically discovers devices on eth1, learns thei
 
 This gateway service provides **flexible dual-stack support** with **per-device MAC registration** on upstream firewalls. It automatically adapts to whatever network eth0 is connected to (IPv4, IPv6, or both) while providing a consistent IPv4 DHCP experience for devices on eth1.
 
-### Key Requirement
-
-**Device MACs must be pre-registered with the upstream firewall** to obtain DHCP addresses. The gateway spoofs each device's MAC on eth0 to trigger firewall registration before assigning addresses.
-
----
-
-## 🎯 Use Case
+### Use Case
 
 Perfect for scenarios where:
 - You have **hundreds of IPv4 devices** that need to connect through **firewall-protected networks**
 - Device **MACs must be pre-registered** on the network firewall (IPv4, IPv6, or both)
 - The upstream network could be **IPv4-only, IPv6-only, or dual-stack**
 - You need a **zero-configuration solution** for end devices
-- You're deploying to environments where manual configuration isn't feasible
 
 **Real-world example:** Deploying legacy IoT devices or mobile devices to networks with strict firewall policies that only allow pre-registered MAC addresses.
-
----
-
-## ✨ Features
-
-### Gateway Capabilities
-- **🌐 Dual-Stack Support**: Works with IPv4-only, IPv6-only, or dual-stack WAN networks
-- **🔍 Automatic Discovery**: Monitors ARP table to discover devices as they connect
-- **🎭 MAC Spoofing**: Spoofs device MACs on eth0 to request DHCPv4 and/or DHCPv6
-- **🔄 Protocol Detection**: Automatically detects available protocols (IPv4/IPv6) on WAN
-- **📡 DHCP Dual Client**: Requests both DHCPv4 and DHCPv6 based on WAN availability
-- **🔀 Transparent NAT**: Uses OpenWrt's native NAT for IPv4 traffic
-- **🌉 464XLAT Ready**: Can use 464XLAT for IPv4↔IPv6 translation when needed
-
-### Management & Monitoring
-- **💾 Persistent Storage**: Device mappings saved to JSON with automatic backups
-- **📊 REST API**: Monitor status and devices via HTTP endpoints (port 5050)
-- **🔄 Auto-Recovery**: Automatic retry with exponential backoff, survives reboots
-- **📝 Comprehensive Logging**: Detailed logs for troubleshooting
-- **🛠️ CLI Tools**: Helper scripts for quick status checks
-- **🔍 Diagnostic Tool**: Built-in diagnostic and automated fix capabilities
-
----
-
-## 📐 Architecture
 
 ### Network Topology
 
 ```
 [Devices] ←→ eth1 (LAN) ←→ NanoPi Gateway ←→ eth0 (WAN) ←→ [Firewall] ←→ [Network]
           192.168.1.0/24    (MAC Spoofing)    DHCP v4/v6      (MAC Check)    IPv4/IPv6/Both
-```
-
-### The Complete Flow
-
-```
-IPv4 Device → eth1 → Gateway (learns MAC) → eth0 (spoofs MAC) → Firewall → Network
-             (192.168.1.x)                   (requests DHCP)   (checks MAC)  (IPv4/IPv6/both)
-```
-
-### Component Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      Gateway Service                             │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │ARP Monitor   │  │DHCPv4Manager │  │DHCPv6Manager │          │
-│  │(eth1)        │  │(eth0)        │  │(eth0)        │          │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
-│         │                 │                  │                   │
-│         └─────────────────┴──────────────────┘                   │
-│                           │                                       │
-│                  ┌────────▼────────┐                             │
-│                  │ Device Mapping  │                             │
-│                  │    Storage      │                             │
-│                  └─────────────────┘                             │
-│                                                                   │
-│  ┌──────────────────────────────────────────────────────┐       │
-│  │              REST API Server (port 5050)              │       │
-│  └──────────────────────────────────────────────────────┘       │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -125,42 +57,71 @@ IPv4 Device → eth1 → Gateway (learns MAC) → eth0 (spoofs MAC) → Firewall
 - **Network**: IPv4, IPv6, or dual-stack network with firewall
 - **Your Computer**: Bash shell, SSH access to router
 
-### Automated Deployment
-
-**Recommended method** - Deploy in one command:
+### One-Command Deployment
 
 ```bash
 # Clone or download this repository
 cd /path/to/ipv6_ipv4_gateway_owrt
 
 # Deploy to router (replace with your router's IP)
-./quick-deploy.sh root@<router-ip> --full-auto
+scp ipv4_ipv6_gateway.py gateway_config.py gateway_api_server.py \
+    install.sh diagnose-and-fix.sh \
+    gateway-status-direct.sh gateway-devices-direct.sh \
+    setup-port-forwarding.sh \
+    root@<router-ip>:/tmp/
+
+# SSH and install
+ssh root@<router-ip>
+cd /tmp
+chmod +x install.sh
+./install.sh --full-auto
 ```
 
 **What this does:**
-1. ✅ Copies all files to router
-2. ✅ Installs dependencies (Python, odhcp6c, udhcpc, iptables, etc.)
-3. ✅ Installs the gateway service
-4. ✅ Creates dual-stack network configuration
-5. ✅ Applies network config
-6. ✅ Starts the service
+1. ✅ Installs dependencies (Python, odhcp6c, udhcpc, iptables, etc.)
+2. ✅ Installs the gateway service
+3. ✅ Creates dual-stack network configuration
+4. ✅ Applies network config
+5. ✅ Starts the service
+6. ✅ Installs helper commands (`gateway-status`, `gateway-port-forward`, etc.)
 
-### Manual Installation
+### Verify Installation
 
 ```bash
-# 1. Copy files to router
-scp *.py *.sh root@<router-ip>:/tmp/
-
-# 2. SSH to router
-ssh root@<router-ip>
-cd /tmp
-
-# 3. Run installation with full automation
-./install.sh --full-auto
-
-# 4. Verify installation
+# Run comprehensive diagnostic
 gateway-diagnose
+
+# Check status
+gateway-status-direct
+
+# View logs
+tail -f /var/log/ipv4-ipv6-gateway.log
 ```
+
+---
+
+## ✨ Features
+
+### Core Capabilities
+- **🌐 Dual-Stack Support**: Works with IPv4-only, IPv6-only, or dual-stack WAN networks
+- **🔍 Automatic Discovery**: Monitors ARP table to discover devices as they connect
+- **🎭 MAC Spoofing**: Spoofs device MACs on eth0 to request DHCPv4 and/or DHCPv6
+- **🔄 Robust DHCP**: 10 retries for DHCPv4, 5 for DHCPv6 with exponential backoff
+- **🔀 Transparent NAT**: Uses OpenWrt's native NAT for IPv4 traffic
+- **🌉 464XLAT Ready**: Can use 464XLAT for IPv4↔IPv6 translation when needed
+
+### Management & Monitoring
+- **💾 Persistent Storage**: Device mappings saved to JSON with automatic backups
+- **📊 REST API**: Monitor status and devices via HTTP endpoints (port 5050)
+- **🔄 Auto-Recovery**: Automatic retry with exponential backoff, survives reboots
+- **📝 Comprehensive Logging**: Detailed logs for troubleshooting
+- **🛠️ CLI Tools**: Helper scripts for quick status checks
+- **🔍 Diagnostic Tool**: Built-in diagnostic and automated fix capabilities
+- **🌐 Port Forwarding**: Access IPv4 device services from IPv6 network (and vice versa)
+
+### Console/KVM Support
+- **🖥️ Direct Commands**: CLI tools that work without network (perfect for console access)
+- **✅ No API Required**: `gateway-status-direct` and `gateway-devices-direct` work offline
 
 ---
 
@@ -193,7 +154,7 @@ eth0 has: IPv4 ✓, IPv6 ✓  (dual-stack example)
 eth0 MAC → aa:bb:cc:dd:ee:ff
 udhcpc requests IPv4
 Firewall sees registered MAC → allows
-Gateway gets: 10.1.2.50
+Gateway gets: 10.1.2.50 (10 retries with backoff)
 ```
 
 #### 6. **Gateway spoofs MAC and requests DHCPv6** (if available)
@@ -201,7 +162,7 @@ Gateway gets: 10.1.2.50
 eth0 MAC → aa:bb:cc:dd:ee:ff
 odhcp6c requests IPv6
 Firewall sees registered MAC → allows
-Gateway gets: 2001:db8::1234
+Gateway gets: 2001:db8::1234 (5 retries with backoff)
 ```
 
 #### 7. **Device fully configured**
@@ -215,271 +176,175 @@ Gateway gets: 2001:db8::1234
 }
 ```
 
-#### 8. **Traffic flows transparently**
-- Device sends to 192.168.1.1 (gateway)
-- Gateway NATs through appropriate WAN address(es)
-- Response returns to device seamlessly
+### Supported Network Types
 
-### Discovery Process Diagram
-
-```
-Device Connects
-       │
-       ▼
-ARP Monitoring (10s interval)
-       │
-       ▼
-New MAC Detected
-       │
-       ▼
-Detect WAN Protocols
-       │
-       ├────────────┬────────────┐
-       │            │            │
-  IPv4 Available  IPv6 Available Both
-       │            │            │
-       ▼            ▼            ▼
-  Request DHCPv4  Request DHCPv6  Request Both
-       │            │            │
-       ▼            ▼            ▼
-  Get IPv4 WAN   Get IPv6 WAN   Get Both
-       │            │            │
-       └────────────┴────────────┘
-                    │
-                    ▼
-            Device Active
-                    │
-                    ▼
-          NAT Traffic Flow
-```
-
----
-
-## 🌐 Supported Network Types
-
-### ✅ IPv4-Only Network
-```
-eth0 connected to IPv4-only network
-↓
-Gateway detects: IPv4 ✓, IPv6 ✗
-↓
-Requests DHCPv4 only (spoofs MAC)
-↓
-Device gets WAN IPv4 address
-↓
-Traffic uses IPv4 NAT
-```
-
-**Use case:** Traditional enterprise networks, older ISPs
-
-### ✅ IPv6-Only Network
-```
-eth0 connected to IPv6-only network
-↓
-Gateway detects: IPv4 ✗, IPv6 ✓
-↓
-Requests DHCPv6 only (spoofs MAC)
-↓
-Device gets WAN IPv6 address
-↓
-Traffic uses IPv6 (464XLAT for IPv4 apps)
-```
-
-**Use case:** Modern ISPs, mobile networks, IPv6-native deployments
-
-### ✅ Dual-Stack Network (Most Common)
-```
-eth0 connected to dual-stack network
-↓
-Gateway detects: IPv4 ✓, IPv6 ✓
-↓
-Requests BOTH DHCPv4 AND DHCPv6 (spoofs MAC)
-↓
-Device gets both WAN IPv4 + IPv6 addresses
-↓
-Traffic uses both protocols (prefer IPv4)
-```
-
-**Use case:** Modern enterprise networks, ISPs with transition strategy
+| Network Type | Detection | Behavior |
+|--------------|-----------|----------|
+| **IPv4-Only** | IPv4 ✓, IPv6 ✗ | Requests DHCPv4 only |
+| **IPv6-Only** | IPv4 ✗, IPv6 ✓ | Requests DHCPv6 only |
+| **Dual-Stack** | IPv4 ✓, IPv6 ✓ | Requests both protocols |
 
 ---
 
 ## 📦 Deployment
 
-### Step 1: Deploy to Router
+### Full Installation
 
 ```bash
-# On your development machine:
-./quick-deploy.sh root@<router-ip> --full-auto
-```
+# 1. Copy all files to router
+scp ipv4_ipv6_gateway.py gateway_config.py gateway_api_server.py \
+    install.sh diagnose-and-fix.sh \
+    gateway-status-direct.sh gateway-devices-direct.sh \
+    setup-port-forwarding.sh \
+    root@<router-ip>:/tmp/
 
-This automatically:
-- Copies all files
-- Installs dependencies
-- Configures dual-stack network
-- Starts service
-
-### Step 2: Verify Installation
-
-```bash
-# SSH to router
+# 2. SSH to router
 ssh root@<router-ip>
+cd /tmp
 
-# Run comprehensive diagnostic
-gateway-diagnose
-
-# Expected output:
-#  ✓ eth1 has 192.168.1.1/24
-#  ✓ Gateway service is running
-#  ✓ API server responding
-#  ✓ All checks passed
+# 3. Run full auto install
+chmod +x install.sh
+./install.sh --full-auto
 ```
 
-### Step 3: Register Device MACs ⚠️ CRITICAL
+### ⚠️ CRITICAL: Register Device MACs
 
 **Before devices can obtain WAN addresses, their MACs must be registered with the upstream firewall!**
 
-```bash
-# This is YOUR responsibility - register each device MAC
-# with your firewall/network administrator before deployment
+This is YOUR responsibility - the gateway cannot do this.
 
-# Example MACs to register:
-# - aa:bb:cc:dd:ee:01
-# - aa:bb:cc:dd:ee:02
-# - aa:bb:cc:dd:ee:03
-```
-
-### Step 4: Connect Test Device
+### Verify Installation
 
 ```bash
-# Connect a device to eth1 physical port
-# Watch logs in real-time:
+# Run comprehensive diagnostic
+gateway-diagnose
+
+# Check service status
+gateway-status-direct
+
+# Watch live logs
 tail -f /var/log/ipv4-ipv6-gateway.log
 
-# Expected log output:
+# Expected log sequence:
 # [INFO] New device discovered: aa:bb:cc:dd:ee:ff (IPv4: 192.168.1.100)
-# [INFO] WAN protocols detected - IPv4: True, IPv6: True
-# [INFO] Requesting DHCPv4 for aa:bb:cc:dd:ee:ff (WAN has IPv4)
-# [INFO] Successfully obtained IPv4 10.1.2.50 for MAC aa:bb:cc:dd:ee:ff
-# [INFO] Requesting DHCPv6 for aa:bb:cc:dd:ee:ff (WAN has IPv6)
-# [INFO] Successfully obtained IPv6 2001:db8::1234 for MAC aa:bb:cc:dd:ee:ff
-# [INFO] Device aa:bb:cc:dd:ee:ff successfully configured - IPv4: 10.1.2.50, IPv6: 2001:db8::1234
-```
-
-### Step 5: Test Connectivity
-
-```bash
-# From your test device (connected to eth1):
-
-# Test LAN connectivity
-ping 192.168.1.1
-
-# Test external IPv4 (if WAN has IPv4)
-ping 8.8.8.8
-
-# Test external IPv6 (if WAN has IPv6)
-ping6 2001:4860:4860::8888
-
-# All should work!
+# [INFO] Started discovery thread for aa:bb:cc:dd:ee:ff
+# [INFO] Will attempt - DHCPv4: True, DHCPv6: True
+# [INFO] Requesting DHCPv4 for aa:bb:cc:dd:ee:ff
+# [DEBUG] DHCPv4 attempt 1/10
+# [DEBUG] DHCPv4 request succeeded
+# [INFO] Successfully obtained IPv4 10.1.2.50 for aa:bb:cc:dd:ee:ff
 ```
 
 ---
 
-## 📖 Usage
+## 🌐 Port Forwarding
 
-### Check Gateway Status
+Access services on IPv4 devices from IPv6 network (or vice versa) using built-in port forwarding.
 
-```bash
-# Quick status check
-gateway-status
-
-# Example output:
-{
-  "running": true,
-  "device_count": 5,
-  "active_devices": 3,
-  "eth0_up": true,
-  "eth1_up": true,
-  "devices": {...}
-}
-```
-
-### List Devices
+### Quick Setup
 
 ```bash
-# List all devices
-gateway-devices
+# Find device IP
+gateway-devices-direct
+# Shows: "ipv4_address": "192.168.1.100"
 
-# List active devices only
-gateway-devices active
-
-# List inactive devices
-gateway-devices inactive
-
-# Example output:
-{
-  "total": 3,
-  "devices": [
-    {
-      "mac_address": "aa:bb:cc:dd:ee:01",
-      "ipv4_address": "192.168.1.100",
-      "ipv4_wan_address": "10.1.2.50",
-      "ipv6_address": "2001:db8::1234",
-      "status": "active",
-      "discovered_at": "2024-01-01T12:00:00",
-      "last_seen": "2024-01-01T12:05:00"
-    }
-  ]
-}
+# Setup port forwarding for common ports
+gateway-port-forward quick-device 192.168.1.100
 ```
 
-### Monitor Logs
+**This creates:**
+- Gateway:8080 → Device:80 (HTTP)
+- Gateway:2323 → Device:23 (Telnet)
+- Gateway:8443 → Device:443 (HTTPS)
+- Gateway:2222 → Device:22 (SSH)
+
+### Access from Client
+
+**Dual-Stack or IPv4 Client:**
+```bash
+# HTTP
+curl http://192.168.1.1:8080
+# Opens device's web interface
+
+# Telnet
+telnet 192.168.1.1 2323
+```
+
+**IPv6-Only Client:**
+```bash
+# First, get gateway's IPv6 address:
+ssh root@192.168.1.1 "ip -6 addr show eth0 | grep inet6 | grep -v fe80"
+# Output: inet6 2001:db8::1/64
+
+# Access via IPv6:
+curl http://[2001:db8::1]:8080
+telnet 2001:db8::1 2323
+```
+
+### Manual Port Forwarding
 
 ```bash
-# Real-time logs
-tail -f /var/log/ipv4-ipv6-gateway.log
+# Add specific ports:
+gateway-port-forward add 8080 192.168.1.100 80   # HTTP
+gateway-port-forward add 2323 192.168.1.100 23   # Telnet
 
-# Search for specific MAC
-grep "aa:bb:cc:dd:ee:ff" /var/log/ipv4-ipv6-gateway.log
+# List active forwards:
+gateway-port-forward list
 
-# Check for errors
-grep -i error /var/log/ipv4-ipv6-gateway.log
-
-# Watch device discovery
-tail -f /var/log/ipv4-ipv6-gateway.log | grep -i discover
+# Remove a forward:
+gateway-port-forward remove 8080 192.168.1.100 80
 ```
 
-### Diagnostic Tool
+### IPv6-Only Clients
+
+For IPv6-only clients to access IPv4 devices, use the IPv6 port forwarding script:
 
 ```bash
-# Run comprehensive diagnostic (14 checks)
-gateway-diagnose
+# Copy to gateway:
+scp setup-ipv6-port-forwarding.sh root@192.168.1.1:/tmp/
 
-# Apply network configuration fix
-gateway-diagnose --fix-network
+# Enable IPv6 port forwarding:
+ssh root@192.168.1.1
+cd /tmp
+chmod +x setup-ipv6-port-forwarding.sh
+./setup-ipv6-port-forwarding.sh enable 192.168.1.100
 
-# Restart gateway service
-gateway-diagnose --fix-service
+# This sets up:
+# - IPv6 firewall rules
+# - NAT64 (if Tayga available)
+# - Port forwards
 
-# Apply all fixes automatically
-gateway-diagnose --fix-all
+# Access from IPv6 client:
+curl http://[<gateway-ipv6>]:8080
 ```
-
-**What it checks:**
-- ✅ Network configuration (eth0/eth1)
-- ✅ IP address assignments
-- ✅ DHCP server status
-- ✅ Gateway service status
-- ✅ API server connectivity
-- ✅ Firewall and forwarding settings
 
 ---
 
 ## ⚙️ Configuration
 
-### Network Configuration
+### DHCP Retry Settings
 
-The installer creates dual-stack network config at `/etc/ipv4-ipv6-gateway/network-config.uci`:
+The gateway uses robust retry logic optimized for upstream firewall MAC registration lag:
+
+```python
+# /opt/ipv4-ipv6-gateway/gateway_config.py
+
+# DHCPv4 (Critical - more retries)
+DHCPV4_TIMEOUT = 15           # 15 seconds per attempt
+DHCPV4_RETRY_COUNT = 10       # 10 attempts (handles MAC registration lag)
+DHCPV4_RETRY_DELAY = 5        # Exponential backoff from 5s
+
+# DHCPv6 (Optional - fewer retries)
+DHCPV6_TIMEOUT = 10           # 10 seconds per attempt
+DHCPV6_RETRY_COUNT = 5        # 5 attempts
+DHCPV6_RETRY_DELAY = 5        # Exponential backoff from 5s
+```
+
+**Worst case timing:**
+- DHCPv4: ~2.5 minutes (enough for firewall registration)
+- DHCPv6: ~1 minute (optional protocol)
+
+### Network Configuration
 
 ```uci
 # eth1 (LAN) - IPv4 devices side
@@ -501,13 +366,6 @@ config interface 'wan6'
     option reqprefix 'auto'
 ```
 
-**Apply changes:**
-```bash
-uci import network < /etc/ipv4-ipv6-gateway/network-config.uci
-uci commit
-/etc/init.d/network restart
-```
-
 ### Firewall Configuration
 
 NAT/masquerading enabled automatically:
@@ -522,35 +380,6 @@ config forwarding
     option dest 'wan'
 ```
 
-### Service Settings
-
-Edit `/opt/ipv4-ipv6-gateway/gateway_config.py`:
-
-```python
-# Network interfaces
-ETH0_INTERFACE = 'eth0'  # WAN (network side)
-ETH1_INTERFACE = 'eth1'  # LAN (devices side)
-
-# Monitoring intervals
-ARP_MONITOR_INTERVAL = 10       # Check for new devices every 10s
-DEVICE_MONITOR_INTERVAL = 30    # Update status every 30s
-
-# DHCPv4 settings
-DHCPV4_TIMEOUT = 10             # Wait 10s for DHCPv4 response
-DHCPV4_RETRY_COUNT = 3          # Retry 3 times on failure
-DHCPV4_RETRY_DELAY = 5          # Initial delay: 5s
-
-# DHCPv6 settings
-DHCPV6_TIMEOUT = 10             # Wait 10s for DHCPv6 response
-DHCPV6_RETRY_COUNT = 3          # Retry 3 times on failure
-DHCPV6_RETRY_DELAY = 5          # Initial delay: 5s
-
-# API Server
-API_ENABLED = True
-API_HOST = '0.0.0.0'            # Bind to all interfaces
-API_PORT = 5050
-```
-
 ---
 
 ## 📊 Monitoring & Management
@@ -558,10 +387,19 @@ API_PORT = 5050
 ### CLI Tools
 
 ```bash
+# API-based (requires network):
 gateway-status              # Overall status
 gateway-devices             # List all devices
 gateway-devices active      # Active devices only
+
+# Direct (works without network, perfect for console/KVM):
+gateway-status-direct       # Status without API
+gateway-devices-direct      # Devices without API
+
+# Management:
 gateway-diagnose            # Full diagnostic
+gateway-diagnose --fix-all  # Apply all fixes
+gateway-port-forward        # Port forwarding management
 ```
 
 ### REST API
@@ -580,17 +418,6 @@ curl http://192.168.1.1:5050/devices
 
 # Filter by status
 curl http://192.168.1.1:5050/devices?status=active
-
-# Get specific device by MAC
-curl http://192.168.1.1:5050/devices/aa:bb:cc:dd:ee:01
-
-# Export device mappings (admin)
-curl -X POST http://192.168.1.1:5050/admin/export > backup.json
-
-# Clear device cache (admin)
-curl -X POST http://192.168.1.1:5050/admin/clear-cache \
-  -H "Content-Type: application/json" \
-  -d '{"confirm": true}'
 ```
 
 ### Service Management
@@ -616,7 +443,7 @@ curl -X POST http://192.168.1.1:5050/admin/clear-cache \
 **Always start with the diagnostic tool:**
 
 ```bash
-# Run comprehensive diagnostic
+# Run comprehensive diagnostic (14 checks)
 gateway-diagnose
 
 # Apply fixes automatically
@@ -633,9 +460,6 @@ gateway-diagnose --fix-all
 ```bash
 # Check if dnsmasq is running
 ps | grep dnsmasq
-
-# Check DHCP leases
-cat /tmp/dhcp.leases
 
 # Check eth1 has correct IP
 ip addr show eth1 | grep "inet "
@@ -660,18 +484,14 @@ gateway-diagnose --fix-network
 tail -50 /var/log/ipv4-ipv6-gateway.log | grep ERROR
 
 # 3. Verify protocols detected
-gateway-status | grep -A2 eth0
+gateway-status-direct
 
-# 4. Test DHCP manually
-# For IPv4:
-udhcpc -i eth0 -n -q -f
-# For IPv6:
-odhcp6c -P 0 eth0
+# 4. Wait for retries
+# With 10 DHCPv4 retries, it may take up to 2.5 minutes
+# This allows time for firewall MAC registration to propagate
 ```
 
 #### 3. Gateway Service Won't Start
-
-**Symptom:** Service fails to start or crashes
 
 **Fix:**
 ```bash
@@ -683,51 +503,53 @@ tail -50 /var/log/ipv4-ipv6-gateway.log
 
 # Run diagnostic
 gateway-diagnose --fix-all
-
-# Check dependencies
-opkg list-installed | grep python3
-opkg list-installed | grep odhcp6c
-opkg list-installed | grep busybox  # includes udhcpc
 ```
 
-#### 4. API Not Responding
+#### 4. Port Forwarding Not Working
 
-**Symptom:** API endpoints return connection refused
+**Symptom:** Can't access device services from network
 
-**Fix:**
+**Check client type:**
 ```bash
-# Test API connectivity
-curl -v http://127.0.0.1:5050/health
-curl -v http://192.168.1.1:5050/health
+# On your client:
+ip addr show | grep -E "inet |inet6"
 
-# Check if API is listening
-netstat -tlnp | grep 5050
-
-# Check service is running
-ps | grep ipv4_ipv6_gateway
-
-# Check logs
-tail -f /var/log/ipv4-ipv6-gateway.log | grep -i api
+# If you see both → Dual-stack (use IPv4)
+# If only inet6 → IPv6-only (need IPv6 port forwarding)
+# If only inet → IPv4-only (use IPv4)
 ```
 
-#### 5. Only IPv4 or IPv6 Working (Not Both)
-
-**Symptom:** Devices only get one type of WAN address
-
-**This is expected behavior!** The gateway adapts to WAN network:
-
+**For dual-stack or IPv4 clients:**
 ```bash
-# Check what's available on WAN
-ip addr show eth0
+# Check forwards are active
+gateway-port-forward list
 
-# If you see only IPv4 addresses:
-# → Gateway will only request DHCPv4
+# Test from gateway
+curl http://192.168.1.1:8080
 
-# If you see only IPv6 addresses:
-# → Gateway will only request DHCPv6
+# Test from client
+curl http://192.168.1.1:8080
+```
 
-# If you see both:
-# → Gateway will request both DHCPv4 and DHCPv6
+**For IPv6-only clients:**
+```bash
+# Use IPv6 port forwarding script
+./setup-ipv6-port-forwarding.sh enable 192.168.1.100
+
+# Access via IPv6
+curl http://[<gateway-ipv6>]:8080
+```
+
+#### 5. Console/KVM Access
+
+**Symptom:** Can't check status from console (network not available)
+
+**Solution:** Use direct commands:
+```bash
+# These work without network:
+gateway-status-direct
+gateway-devices-direct
+tail -f /var/log/ipv4-ipv6-gateway.log
 ```
 
 ---
@@ -738,7 +560,7 @@ ip addr show eth0
 
 ```
 /opt/ipv4-ipv6-gateway/           # Service installation
-├── ipv4_ipv6_gateway.py          # Main service (dual-stack!)
+├── ipv4_ipv6_gateway.py          # Main service
 ├── gateway_config.py             # Configuration
 └── gateway_api_server.py         # REST API server
 
@@ -748,16 +570,13 @@ ip addr show eth0
 ├── dhcp-config.uci               # DHCP config template
 └── firewall-config.uci           # Firewall config template
 
-/var/log/                         # Logs
-└── ipv4-ipv6-gateway.log         # Service logs
-
 /usr/bin/                         # Helper scripts
-├── gateway-status                # Quick status check
-├── gateway-devices               # List devices
-└── gateway-diagnose              # Diagnostic tool
-
-/etc/init.d/                      # Service scripts
-└── ipv4-ipv6-gateway             # Init.d script
+├── gateway-status                # API-based status
+├── gateway-status-direct         # Direct status (no API)
+├── gateway-devices               # API-based devices
+├── gateway-devices-direct        # Direct devices (no API)
+├── gateway-diagnose              # Diagnostic tool
+└── gateway-port-forward          # Port forwarding
 ```
 
 ### Security Considerations
@@ -783,18 +602,18 @@ This service spoofs MAC addresses to request DHCP. Ensure:
 
 ### Performance Tuning
 
-Edit `/opt/ipv4-ipv6-gateway/gateway_config.py`:
-
 ```python
+# Edit /opt/ipv4-ipv6-gateway/gateway_config.py
+
 # Faster discovery (uses more CPU)
 ARP_MONITOR_INTERVAL = 5        # Check every 5s
 
 # Slower discovery (uses less CPU)
 ARP_MONITOR_INTERVAL = 30       # Check every 30s
 
-# Adjust timeouts
-DHCPV4_TIMEOUT = 15             # Slower networks
-DHCPV6_TIMEOUT = 15
+# Adjust timeouts for slower networks
+DHCPV4_TIMEOUT = 20             # Increase from 15s
+DHCPV4_RETRY_COUNT = 15         # More retries for very slow networks
 
 # Increase max devices
 MAX_DEVICES = 2000              # Default: 1000
@@ -812,35 +631,45 @@ bash uninstall.sh --restore-network
 
 ---
 
-## ✅ Pre-Deployment Checklist
+## 🎯 Important Fixes Included
 
-- [ ] **Register device MACs with firewall** ⚠️ CRITICAL
-- [ ] Deploy gateway to router (`./quick-deploy.sh`)
-- [ ] Verify network config applied (`ip addr show`)
-- [ ] Verify service running (`gateway-status`)
-- [ ] Connect test device to eth1
-- [ ] Verify device discovered (`gateway-devices`)
-- [ ] Verify WAN addresses obtained (check logs)
-- [ ] Test connectivity (ping from device)
+This version includes **three critical bug fixes**:
+
+### Fix #1: DHCPv4 IP Application
+- **Problem**: udhcpc succeeded but IP not applied to eth0
+- **Solution**: Removed `-s /bin/true` flag from udhcpc command
+- ✅ **Status**: Fixed
+
+### Fix #2: Protocol Detection
+- **Problem**: Protocol detection checked if eth0 had addresses (chicken-egg problem)
+- **Solution**: Always attempt both DHCPv4 and DHCPv6 based on availability
+- ✅ **Status**: Fixed
+
+### Fix #3: Thread Debugging
+- **Problem**: Thread creation failures were silent
+- **Solution**: Added comprehensive logging for thread lifecycle
+- ✅ **Status**: Fixed
+
+### Enhanced Retry Configuration
+- **DHCPv4**: 3 → 10 retries (handles firewall MAC registration lag)
+- **DHCPv4 timeout**: 10s → 15s (slower servers)
+- **DHCPv6**: 3 → 5 retries (reasonable for optional protocol)
+- ✅ **Total max time**: ~2.5 minutes per device (robust for slow networks)
 
 ---
 
-## 🎉 What's Included
+## ✅ Pre-Deployment Checklist
 
-The gateway is **fully functional** and supports:
-
-✅ **IPv4-only networks**
-✅ **IPv6-only networks**
-✅ **Dual-stack networks**
-✅ **Per-device MAC registration**
-✅ **Automatic protocol detection**
-✅ **Dual DHCP (v4 + v6)**
-✅ **Transparent NAT**
-✅ **464XLAT ready**
-✅ **REST API monitoring**
-✅ **Comprehensive logging**
-✅ **Diagnostic tools**
-✅ **Auto-recovery**
+- [ ] **Register device MACs with firewall** ⚠️ CRITICAL
+- [ ] Deploy gateway to router
+- [ ] Verify network config applied (`ip addr show`)
+- [ ] Verify service running (`gateway-status-direct`)
+- [ ] Connect test device to eth1
+- [ ] Verify device discovered (`gateway-devices-direct`)
+- [ ] Wait for DHCP (up to 2.5 min for DHCPv4 with retries)
+- [ ] Verify WAN addresses obtained (check logs)
+- [ ] Test connectivity (ping from device)
+- [ ] (Optional) Setup port forwarding for device services
 
 ---
 
@@ -848,25 +677,33 @@ The gateway is **fully functional** and supports:
 
 | Task | Command |
 |------|---------|
-| Deploy | `./quick-deploy.sh root@<ip> --full-auto` |
-| Status | `gateway-status` |
-| Devices | `gateway-devices` |
-| Logs | `tail -f /var/log/ipv4-ipv6-gateway.log` |
-| Diagnose | `gateway-diagnose` |
-| Restart | `/etc/init.d/ipv4-ipv6-gateway restart` |
-| API | `http://192.168.1.1:5050/status` |
+| **Deploy** | `./install.sh --full-auto` |
+| **Status** | `gateway-status-direct` |
+| **Devices** | `gateway-devices-direct` |
+| **Logs** | `tail -f /var/log/ipv4-ipv6-gateway.log` |
+| **Diagnose** | `gateway-diagnose` |
+| **Fix All** | `gateway-diagnose --fix-all` |
+| **Port Forward** | `gateway-port-forward quick-device <ip>` |
+| **Restart** | `/etc/init.d/ipv4-ipv6-gateway restart` |
 
 ---
 
-## 🤝 Contributing
+## 🎉 What's Included
 
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+✅ **IPv4-only networks**
+✅ **IPv6-only networks**
+✅ **Dual-stack networks**
+✅ **Per-device MAC registration**
+✅ **Automatic protocol detection**
+✅ **Robust DHCP retry logic** (10 retries DHCPv4, 5 retries DHCPv6)
+✅ **Transparent NAT**
+✅ **Port forwarding** (IPv4 ↔ IPv6)
+✅ **REST API monitoring**
+✅ **Console/KVM support** (direct commands)
+✅ **Comprehensive logging**
+✅ **Diagnostic tools**
+✅ **Auto-recovery**
+✅ **All critical bugs fixed**
 
 ---
 
@@ -882,14 +719,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **odhcp6c** for DHCPv6 client functionality
 - **udhcpc** (busybox) for DHCPv4 client functionality
 - **464XLAT** for IPv4/IPv6 translation
-
----
-
-## 📞 Support
-
-- **Issues**: Open an issue on GitHub
-- **Logs**: Check `/var/log/ipv4-ipv6-gateway.log` for detailed error messages
-- **Diagnostic**: Run `gateway-diagnose` for automated troubleshooting
 
 ---
 

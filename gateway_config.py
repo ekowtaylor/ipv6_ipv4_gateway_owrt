@@ -29,13 +29,13 @@ ETH1_INTERFACE = "eth1"  # IPv4 side (devices)
 
 # DHCPv6 settings
 DHCPV6_TIMEOUT = 10  # seconds
-DHCPV6_RETRY_COUNT = 3
-DHCPV6_RETRY_DELAY = 5  # seconds
+DHCPV6_RETRY_COUNT = 5  # More attempts for slow/busy networks
+DHCPV6_RETRY_DELAY = 5  # seconds (exponential backoff applied)
 
 # DHCPv4 settings
-DHCPV4_TIMEOUT = 10  # seconds
-DHCPV4_RETRY_COUNT = 3
-DHCPV4_RETRY_DELAY = 5  # seconds
+DHCPV4_TIMEOUT = 15  # seconds - longer timeout for MAC registration lag
+DHCPV4_RETRY_COUNT = 10  # More attempts - critical for upstream firewall scenarios
+DHCPV4_RETRY_DELAY = 5  # seconds (exponential backoff applied)
 
 # ARP monitoring
 ARP_MONITOR_INTERVAL = 10  # seconds - check for new devices
