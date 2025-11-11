@@ -515,7 +515,7 @@ class DHCPv4Manager:
             # -f: run in foreground
             # -t N: send up to N discover packets
             # -T TIMEOUT: pause between packets (default 3s)
-            # -s script: run this script (use /bin/true to ignore)
+            # NO -s flag: use default script to actually configure the interface
             process = subprocess.Popen(
                 [
                     cfg.CMD_UDHCPC,
@@ -528,8 +528,7 @@ class DHCPv4Manager:
                     "3",  # 3 discovery attempts
                     "-T",
                     "3",  # 3 second timeout between attempts
-                    "-s",
-                    "/bin/true",  # don't run any script
+                    # Removed "-s", "/bin/true" to allow default script to configure interface
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -541,6 +540,8 @@ class DHCPv4Manager:
 
                 if return_code == 0:
                     self.logger.debug("DHCPv4 request succeeded")
+                    # Give the system a moment to apply the configuration
+                    time.sleep(1)
                     return True
                 else:
                     self.logger.warning(
