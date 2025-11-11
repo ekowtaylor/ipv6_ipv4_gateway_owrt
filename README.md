@@ -107,9 +107,10 @@ tail -f /var/log/ipv4-ipv6-gateway.log
 - **🔍 Automatic Discovery**: Monitors ARP table to discover devices as they connect
 - **🎭 MAC Spoofing**: Spoofs device MACs on eth0 to request DHCPv4 and/or DHCPv6
 - **🔄 Robust DHCP**: 10 retries for DHCPv4, 5 for DHCPv6 with exponential backoff
+- **🌐 **NEW: SLAAC Support**: Full support for IPv6 SLAAC (Stateless Address Autoconfiguration) + DHCPv6
 - **🔀 Transparent NAT**: Uses OpenWrt's native NAT for IPv4 traffic
 - **🌉 464XLAT Ready**: Can use 464XLAT for IPv4↔IPv6 translation when needed
-- **🔄 **NEW: WAN Network Auto-Detection**: Automatically detects WAN network changes and re-requests DHCP for all devices
+- **🔄 WAN Network Auto-Detection**: Automatically detects WAN network changes and re-requests DHCP for all devices
 
 ### Management & Monitoring
 - **💾 Persistent Storage**: Device mappings saved to JSON with automatic backups
@@ -670,6 +671,86 @@ WAN_CHANGE_REDISCOVERY_DELAY = 5  # Seconds to wait after network change
 ```
 
 **This makes the gateway truly plug-and-play for WAN changes!** 🎉
+
+### IPv6 SLAAC + DHCPv6 Support (NEW!)
+
+The gateway now supports **both** IPv6 address assignment methods:
+
+1. **SLAAC (Stateless Address Autoconfiguration)** - Uses Router Advertisements
+2. **DHCPv6 (Stateful)** - Requests address from DHCPv6 server
+
+**How it works:**
+```bash
+# For each device, the gateway:
+
+1. Spoofs device MAC on eth0
+2. Enables IPv6 on the interface
+3. Waits for SLAAC (Router Advertisement) - 3 seconds
+4. If SLAAC provides an address:
+   ✅ Uses SLAAC address
+   ✅ Tries DHCPv6 info-only for DNS/NTP (optional)
+
+5. If SLAAC doesn't work:
+   ✅ Falls back to full DHCPv6 request
+   ✅ Uses DHCPv6-assigned address
+```
+
+**Why both?**
+
+Many networks use different IPv6 deployment strategies:
+- **SLAAC-only**: Network provides prefix via Router Advertisement
+- **DHCPv6-only**: Network requires stateful DHCPv6
+- **Both**: SLAAC for address, DHCPv6 for DNS/options
+
+**The gateway handles all three automatically!** ✨
+
+**Log examples:**
+
+**SLAAC Success:**
+```
+[INFO] Requesting IPv6 for MAC: aa:bb:cc:dd:ee:ff (SLAAC + DHCPv6)
+[DEBUG] Waiting for SLAAC (Router Advertisement)...
+[INFO] Successfully obtained IPv6 2001:db8::1234 via SLAAC for MAC aa:bb:cc:dd:ee:ff (attempt 1)
+[DEBUG] Attempting DHCPv6 for additional configuration...
+```
+
+**DHCPv6 Success:**
+```
+[INFO] Requesting IPv6 for MAC: aa:bb:cc:dd:ee:ff (SLAAC + DHCPv6)
+[DEBUG] Waiting for SLAAC (Router Advertisement)...
+[DEBUG] SLAAC didn't assign address, trying DHCPv6...
+[DEBUG] DHCPv6 request succeeded
+[INFO] Successfully obtained IPv6 2001:db8::5678 via DHCPv6 for MAC aa:bb:cc:dd:ee:ff (attempt 1)
+```
+
+**Configuration (usually no changes needed):**
+```python
+# /opt/ipv4-ipv6-gateway/gateway_config.py
+
+# SLAAC wait time
+# Increase if your network has slow Router Advertisements
+# (Currently hardcoded to 3 seconds in _enable_ipv6_on_interface)
+
+# DHCPv6 settings apply to fallback
+DHCPV6_TIMEOUT = 10
+DHCPV6_RETRY_COUNT = 5
+```
+
+**Troubleshooting:**
+
+```bash
+# Check if SLAAC is working
+ip -6 addr show eth0
+# Should show: inet6 2001:db8::xxx scope global (not fe80::)
+
+# Check sysctl settings
+sysctl net.ipv6.conf.eth0.accept_ra
+sysctl net.ipv6.conf.eth0.autoconf
+# Both should be: 1 or 2
+
+# View logs
+tail -f /var/log/ipv4-ipv6-gateway.log | grep -i "slaac\|dhcpv6"
+```
 
 ### File Structure
 

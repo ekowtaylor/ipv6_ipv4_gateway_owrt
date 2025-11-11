@@ -330,7 +330,7 @@ class ARPMonitor:
 
 
 class DHCPv6Manager:
-    """Manages DHCPv6 requests with MAC spoofing"""
+    """Manages IPv6 address assignment (SLAAC + DHCPv6) with MAC spoofing"""
 
     def __init__(self, interface: str, timeout: int = cfg.DHCPV6_TIMEOUT):
         self.interface = interface
@@ -340,10 +340,19 @@ class DHCPv6Manager:
 
     def request_ipv6_for_mac(self, mac: str) -> Optional[str]:
         """
-        Spoof MAC on interface, request DHCPv6, return assigned IPv6 address.
+        Spoof MAC on interface, enable SLAAC + DHCPv6, return assigned IPv6 address.
+
+        This method supports both IPv6 address assignment methods:
+        1. SLAAC (Stateless Address Autoconfiguration) - uses Router Advertisement
+        2. DHCPv6 (Stateful) - requests address from DHCPv6 server
+
+        Many networks use both:
+        - SLAAC for address assignment
+        - DHCPv6 for additional info (DNS, NTP, etc.)
+
         Uses exponential backoff retry logic for reliability.
         """
-        self.logger.info(f"Requesting IPv6 for MAC: {mac}")
+        self.logger.info(f"Requesting IPv6 for MAC: {mac} (SLAAC + DHCPv6)")
 
         original_mac = self.iface.get_mac_address()
 
@@ -360,9 +369,36 @@ class DHCPv6Manager:
             for attempt in range(cfg.DHCPV6_RETRY_COUNT):
                 attempt_num = attempt + 1
                 self.logger.debug(
-                    f"DHCPv6 attempt {attempt_num}/{cfg.DHCPV6_RETRY_COUNT} for MAC {mac}"
+                    f"IPv6 attempt {attempt_num}/{cfg.DHCPV6_RETRY_COUNT} for MAC {mac}"
                 )
 
+                # Enable IPv6 on interface (required for SLAAC)
+                if not self._enable_ipv6_on_interface():
+                    self.logger.warning(f"Failed to enable IPv6 on {self.interface}")
+                    continue
+
+                # Wait for SLAAC (Router Advertisement)
+                self.logger.debug(f"Waiting for SLAAC (Router Advertisement)...")
+                time.sleep(3)  # Give SLAAC time to work
+
+                # Check if SLAAC assigned an address
+                addresses = self.iface.get_ipv6_addresses()
+                if addresses:
+                    ipv6 = addresses[0]
+                    self.logger.info(
+                        f"Successfully obtained IPv6 {ipv6} via SLAAC for MAC {mac} "
+                        f"(attempt {attempt_num})"
+                    )
+
+                    # Try DHCPv6 for additional configuration (DNS, etc.)
+                    # This won't necessarily give us a new address, but provides other info
+                    self.logger.debug("Attempting DHCPv6 for additional configuration...")
+                    self._request_dhcpv6_info_only()
+
+                    return ipv6
+
+                # SLAAC didn't work, try full DHCPv6
+                self.logger.debug("SLAAC didn't assign address, trying DHCPv6...")
                 if self._request_dhcpv6():
                     time.sleep(2)
                     addresses = self.iface.get_ipv6_addresses()
@@ -370,7 +406,7 @@ class DHCPv6Manager:
                     if addresses:
                         ipv6 = addresses[0]
                         self.logger.info(
-                            f"Successfully obtained IPv6 {ipv6} for MAC {mac} "
+                            f"Successfully obtained IPv6 {ipv6} via DHCPv6 for MAC {mac} "
                             f"(attempt {attempt_num})"
                         )
                         return ipv6
@@ -381,7 +417,7 @@ class DHCPv6Manager:
                         )
                 else:
                     self.logger.warning(
-                        f"DHCPv6 request failed for MAC {mac} (attempt {attempt_num})"
+                        f"Both SLAAC and DHCPv6 failed for MAC {mac} (attempt {attempt_num})"
                     )
 
                 # Exponential backoff: wait longer after each failed attempt
@@ -392,28 +428,68 @@ class DHCPv6Manager:
 
             # All retries failed
             self.logger.error(
-                f"All {cfg.DHCPV6_RETRY_COUNT} DHCPv6 attempts failed for MAC {mac}"
+                f"All {cfg.DHCPV6_RETRY_COUNT} IPv6 attempts failed for MAC {mac}"
             )
             return None
 
         except Exception as e:
-            self.logger.error(f"Exception during DHCPv6 request: {e}")
+            self.logger.error(f"Exception during IPv6 request: {e}")
             return None
         finally:
             if original_mac:
                 self.iface.set_mac_address(original_mac)
 
-    def _request_dhcpv6(self) -> bool:
-        """Execute DHCPv6 request using odhcp6c"""
+    def _enable_ipv6_on_interface(self) -> bool:
+        """
+        Enable IPv6 on interface for SLAAC.
+        This enables Router Advertisement processing.
+        """
         try:
+            # Enable IPv6 forwarding and accept RA
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.disable_ipv6=0"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.accept_ra=2"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.autoconf=1"],
+                check=True,
+                capture_output=True,
+            )
+            self.logger.debug(f"Enabled IPv6/SLAAC on {self.interface}")
+            return True
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to enable IPv6 on {self.interface}: {e}")
+            return False
+
+    def _request_dhcpv6(self) -> bool:
+        """Execute DHCPv6 request using odhcp6c (stateful - requests address)"""
+        try:
+            # -P 0: Request address (not just prefix)
+            # -s: Script to execute (use default)
+            # -t timeout: How long to wait
             process = subprocess.Popen(
-                [cfg.CMD_ODHCP6C, "-P", "0", self.interface],
+                [cfg.CMD_ODHCP6C, "-P", "0", "-t", str(self.timeout), self.interface],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
 
             try:
-                process.wait(timeout=self.timeout)
+                stdout, stderr = process.communicate(timeout=self.timeout + 2)
+                return_code = process.returncode
+
+                if return_code == 0:
+                    self.logger.debug("DHCPv6 request succeeded")
+                    return True
+                else:
+                    self.logger.debug(f"DHCPv6 request failed with exit code {return_code}")
+                    return False
+
             except subprocess.TimeoutExpired:
                 self.logger.warning(
                     "DHCPv6 request timed out after %s seconds, terminating",
@@ -424,10 +500,42 @@ class DHCPv6Manager:
                     process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                return False
 
-            return True
         except Exception as e:
             self.logger.error(f"DHCPv6 request error: {e}")
+            return False
+
+    def _request_dhcpv6_info_only(self) -> bool:
+        """
+        Execute DHCPv6 information-only request (doesn't request address).
+        Used after SLAAC to get DNS, NTP, etc.
+        """
+        try:
+            # -S: Information-only mode (no address request)
+            # -t timeout: How long to wait
+            process = subprocess.Popen(
+                [cfg.CMD_ODHCP6C, "-S", "-t", "5", self.interface],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            try:
+                stdout, stderr = process.communicate(timeout=7)
+                if process.returncode == 0:
+                    self.logger.debug("DHCPv6 info-only request succeeded")
+                return True
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                return False
+
+        except Exception as e:
+            self.logger.debug(f"DHCPv6 info-only request error (non-critical): {e}")
+            return False
             return False
 
 
