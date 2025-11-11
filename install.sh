@@ -296,18 +296,21 @@ fi
 cat > "$CONFIG_DIR/network-config.uci" << 'EOF'
 package network
 
-# IPv4↔IPv6 Gateway Network Configuration
-# eth1 (LAN side) - IPv4 devices
-# eth0 (WAN side) - IPv6 network
+# Flexible IPv4/IPv6 Gateway Network Configuration
+# eth1 (LAN side) - IPv4 devices (always 192.168.1.0/24)
+# eth0 (WAN side) - Supports IPv4, IPv6, or dual-stack
 
 config interface 'lan'
 	option device 'eth1'
 	option proto 'static'
 	option ipaddr '192.168.1.1'
 	option netmask '255.255.255.0'
-	option ip6assign '60'
 
 config interface 'wan'
+	option device 'eth0'
+	option proto 'dhcp'
+
+config interface 'wan6'
 	option device 'eth0'
 	option proto 'dhcpv6'
 	option reqaddress 'try'
@@ -315,11 +318,9 @@ config interface 'wan'
 
 config device
 	option name 'eth0'
-	option macaddr 'auto'
 
 config device
 	option name 'eth1'
-	option macaddr 'auto'
 EOF
 
 echo -e "${GREEN}✓ Network configuration created at $CONFIG_DIR/network-config.uci${NC}"
@@ -364,6 +365,60 @@ config dhcp 'wan'
 EOF
 
 echo -e "${GREEN}✓ DHCP configuration created at $CONFIG_DIR/dhcp-config.uci${NC}\n"
+
+# Step 6.5: Create firewall configuration
+echo -e "${YELLOW}Step 6.5: Creating firewall configuration...${NC}"
+cat > "$CONFIG_DIR/firewall-config.uci" << 'EOF'
+package firewall
+
+# Firewall configuration for dual-stack gateway
+# Allows forwarding between LAN (eth1) and WAN (eth0)
+
+config defaults
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option syn_flood '1'
+
+config zone
+	option name 'lan'
+	list network 'lan'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'ACCEPT'
+
+config zone
+	option name 'wan'
+	list network 'wan'
+	list network 'wan6'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option masq '1'
+	option mtu_fix '1'
+
+config forwarding
+	option src 'lan'
+	option dest 'wan'
+
+config rule
+	option name 'Allow-DHCP-Renew'
+	option src 'wan'
+	option proto 'udp'
+	option dest_port '68'
+	option target 'ACCEPT'
+	option family 'ipv4'
+
+config rule
+	option name 'Allow-DHCPv6'
+	option src 'wan'
+	option proto 'udp'
+	option dest_port '546'
+	option target 'ACCEPT'
+	option family 'ipv6'
+EOF
+
+echo -e "${GREEN}✓ Firewall configuration created at $CONFIG_DIR/firewall-config.uci${NC}\n"
 
 # Step 7: Create sample override configuration
 echo -e "${YELLOW}Step 7: Creating sample override configuration...${NC}"

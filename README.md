@@ -1,8 +1,8 @@
-# IPv4↔IPv6 Dynamic Gateway
+# IPv4↔IPv6 Dual-Stack Gateway - Complete Guide
 
-**Plug-and-play MAC learning gateway with DHCPv6 discovery for NanoPi R5C**
+**Flexible dual-stack gateway with per-device MAC registration for NanoPi R5C running OpenWrt**
 
-A Python-based service that automatically discovers IPv4 devices, learns their MAC addresses, requests IPv6 addresses via DHCPv6 (with MAC spoofing), and maintains transparent IPv4↔IPv6 translation using 464XLAT.
+A Python-based service that automatically discovers devices on eth1, learns their MAC addresses, spoofs them on eth0 to request DHCP (v4 and/or v6), and maintains transparent connectivity through IPv4, IPv6, or dual-stack networks.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
@@ -12,35 +12,57 @@ A Python-based service that automatically discovers IPv4 devices, learns their M
 
 ## 📖 Table of Contents
 
+- [Overview](#-overview)
 - [Use Case](#-use-case)
 - [Features](#-features)
+- [Architecture](#-architecture)
 - [Quick Start](#-quick-start)
-  - [Automated Deployment](#automated-deployment)
-  - [Manual Installation](#manual-installation)
+- [How It Works](#-how-it-works)
+- [Supported Networks](#-supported-network-types)
+- [Deployment](#-deployment)
 - [Usage](#-usage)
 - [Configuration](#️-configuration)
+- [Monitoring](#-monitoring--management)
 - [Troubleshooting](#-troubleshooting)
 - [Advanced Topics](#-advanced-topics)
+
+---
+
+## 🎯 Overview
+
+This gateway service provides **flexible dual-stack support** with **per-device MAC registration** on upstream firewalls. It automatically adapts to whatever network eth0 is connected to (IPv4, IPv6, or both) while providing a consistent IPv4 DHCP experience for devices on eth1.
+
+### Key Requirement
+
+**Device MACs must be pre-registered with the upstream firewall** to obtain DHCP addresses. The gateway spoofs each device's MAC on eth0 to trigger firewall registration before assigning addresses.
 
 ---
 
 ## 🎯 Use Case
 
 Perfect for scenarios where:
-- You have **hundreds of IPv4-only devices** that need to connect to **IPv6-only networks**
-- Device **MACs must be pre-registered** on the IPv6 network firewall
+- You have **hundreds of IPv4 devices** that need to connect through **firewall-protected networks**
+- Device **MACs must be pre-registered** on the network firewall (IPv4, IPv6, or both)
+- The upstream network could be **IPv4-only, IPv6-only, or dual-stack**
 - You need a **zero-configuration solution** for end devices
 - You're deploying to environments where manual configuration isn't feasible
 
-**Real-world example:** Deploying legacy IoT devices to a modern IPv6 infrastructure where the firewall only allows whitelisted MAC addresses.
+**Real-world example:** Deploying legacy IoT devices or mobile devices to networks with strict firewall policies that only allow pre-registered MAC addresses.
 
 ---
 
 ## ✨ Features
 
+### Gateway Capabilities
+- **🌐 Dual-Stack Support**: Works with IPv4-only, IPv6-only, or dual-stack WAN networks
 - **🔍 Automatic Discovery**: Monitors ARP table to discover devices as they connect
-- **🎭 MAC Spoofing**: Spoofs device MACs on IPv6 interface to request DHCPv6
-- **🌐 464XLAT Translation**: Transparent IPv4↔IPv6 protocol conversion
+- **🎭 MAC Spoofing**: Spoofs device MACs on eth0 to request DHCPv4 and/or DHCPv6
+- **🔄 Protocol Detection**: Automatically detects available protocols (IPv4/IPv6) on WAN
+- **📡 DHCP Dual Client**: Requests both DHCPv4 and DHCPv6 based on WAN availability
+- **🔀 Transparent NAT**: Uses OpenWrt's native NAT for IPv4 traffic
+- **🌉 464XLAT Ready**: Can use 464XLAT for IPv4↔IPv6 translation when needed
+
+### Management & Monitoring
 - **💾 Persistent Storage**: Device mappings saved to JSON with automatic backups
 - **📊 REST API**: Monitor status and devices via HTTP endpoints (port 5050)
 - **🔄 Auto-Recovery**: Automatic retry with exponential backoff, survives reboots
@@ -48,20 +70,49 @@ Perfect for scenarios where:
 - **🛠️ CLI Tools**: Helper scripts for quick status checks
 - **🔍 Diagnostic Tool**: Built-in diagnostic and automated fix capabilities
 
-### Architecture
+---
+
+## 📐 Architecture
+
+### Network Topology
 
 ```
-[IPv4 Devices] ←→ eth1 (192.168.1.0/24) ← NanoPi R5C Gateway → eth0 (DHCPv6) ←→ [IPv6 Network]
-                                          (Running this service)
+[Devices] ←→ eth1 (LAN) ←→ NanoPi Gateway ←→ eth0 (WAN) ←→ [Firewall] ←→ [Network]
+          192.168.1.0/24    (MAC Spoofing)    DHCP v4/v6      (MAC Check)    IPv4/IPv6/Both
 ```
 
-**How it works:**
-1. Device connects to eth1 (IPv4 side) and appears in ARP table
-2. Service discovers MAC address automatically
-3. Service spoofs MAC on eth0 (IPv6 side) and requests DHCPv6
-4. IPv6 address assigned by DHCPv6 server (firewall sees pre-registered MAC)
-5. 464XLAT handles IPv4↔IPv6 translation transparently
-6. Device communicates over IPv6 network using IPv4 protocols
+### The Complete Flow
+
+```
+IPv4 Device → eth1 → Gateway (learns MAC) → eth0 (spoofs MAC) → Firewall → Network
+             (192.168.1.x)                   (requests DHCP)   (checks MAC)  (IPv4/IPv6/both)
+```
+
+### Component Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      Gateway Service                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
+│  │ARP Monitor   │  │DHCPv4Manager │  │DHCPv6Manager │          │
+│  │(eth1)        │  │(eth0)        │  │(eth0)        │          │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘          │
+│         │                 │                  │                   │
+│         └─────────────────┴──────────────────┘                   │
+│                           │                                       │
+│                  ┌────────▼────────┐                             │
+│                  │ Device Mapping  │                             │
+│                  │    Storage      │                             │
+│                  └─────────────────┘                             │
+│                                                                   │
+│  ┌──────────────────────────────────────────────────────┐       │
+│  │              REST API Server (port 5050)              │       │
+│  └──────────────────────────────────────────────────────┘       │
+│                                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -71,125 +122,272 @@ Perfect for scenarios where:
 
 - **Hardware**: NanoPi R5C (or similar dual-NIC router)
 - **OS**: OpenWrt (or any Linux with Python 3.7+)
-- **Network**: IPv6 network with DHCPv6 server
+- **Network**: IPv4, IPv6, or dual-stack network with firewall
 - **Your Computer**: Bash shell, SSH access to router
 
 ### Automated Deployment
 
-**Recommended method** - Deploy from your computer in one command:
+**Recommended method** - Deploy in one command:
 
 ```bash
-# Clone or download this repository to your computer
+# Clone or download this repository
 cd /path/to/ipv6_ipv4_gateway_owrt
 
 # Deploy to router (replace with your router's IP)
-export ROUTER_IP=192.168.1.1
-./quick-deploy.sh --auto-start
-
-# SSH to router to apply network configuration
-ssh root@$ROUTER_IP
-
-# Run diagnostic to check status
-/tmp/diagnose-and-fix.sh
-
-# Apply network configuration (this will configure eth1 and eth0)
-/tmp/diagnose-and-fix.sh --fix-network
-# OR apply all fixes at once
-/tmp/diagnose-and-fix.sh --fix-all
-
-# Verify everything is working
-gateway-diagnose
-gateway-status
+./quick-deploy.sh root@<router-ip> --full-auto
 ```
 
 **What this does:**
 1. ✅ Copies all files to router
-2. ✅ Installs dependencies (Python, odhcp6c, iptables, etc.)
+2. ✅ Installs dependencies (Python, odhcp6c, udhcpc, iptables, etc.)
 3. ✅ Installs the gateway service
-4. ✅ Creates network configuration files
-5. ✅ Starts the service (with `--auto-start`)
-6. ✅ Applies network config when you run the diagnostic fix
+4. ✅ Creates dual-stack network configuration
+5. ✅ Applies network config
+6. ✅ Starts the service
 
 ### Manual Installation
 
-If you prefer step-by-step control:
-
 ```bash
 # 1. Copy files to router
-scp *.py *.sh root@192.168.1.1:/tmp/
+scp *.py *.sh root@<router-ip>:/tmp/
 
 # 2. SSH to router
-ssh root@192.168.1.1
+ssh root@<router-ip>
 cd /tmp
 
-# 3. Choose installation mode:
-
-# Option A: Full automatic (applies network config and starts service)
+# 3. Run installation with full automation
 ./install.sh --full-auto
 
-# Option B: Apply network config only (manual start)
-./install.sh --apply-network
-
-# Option C: Auto-start service only (manual network config)
-./install.sh --auto-start
-
-# Option D: Safe mode (review before applying anything)
-./install.sh
-
-# 4. If you chose safe mode, manually apply network config:
-uci import network < /etc/ipv4-ipv6-gateway/network-config.uci
-uci import dhcp < /etc/ipv4-ipv6-gateway/dhcp-config.uci
-uci commit
-/etc/init.d/network restart
-/etc/init.d/dnsmasq restart
-
-# 5. Start service (if not using --auto-start or --full-auto)
-/etc/init.d/ipv4-ipv6-gateway start
-
-# 6. Verify installation
-gateway-status
+# 4. Verify installation
+gateway-diagnose
 ```
 
-### Installation Flags
+---
 
-| Flag | Network Config | Start Service | Use Case |
-|------|----------------|---------------|----------|
-| *(none)* | Creates only | Enables only | Safe review mode |
-| `--apply-network` | ✅ **Applies** | Enables only | Configure network first |
-| `--auto-start` | Creates only | ✅ **Starts** | Start service first |
-| `--full-auto` | ✅ **Applies** | ✅ **Starts** | Zero-touch deployment |
+## 🔄 How It Works
+
+### Device Connection Flow
+
+#### 1. **Device connects to eth1** (LAN)
+```
+iPhone → eth1
+```
+
+#### 2. **DHCP assigns LAN IP** (from gateway's dnsmasq)
+```
+iPhone gets 192.168.1.100
+```
+
+#### 3. **Gateway discovers MAC** (via ARP monitoring)
+```
+Detected: aa:bb:cc:dd:ee:ff
+```
+
+#### 4. **Gateway detects WAN protocols**
+```
+eth0 has: IPv4 ✓, IPv6 ✓  (dual-stack example)
+```
+
+#### 5. **Gateway spoofs MAC and requests DHCPv4** (if available)
+```
+eth0 MAC → aa:bb:cc:dd:ee:ff
+udhcpc requests IPv4
+Firewall sees registered MAC → allows
+Gateway gets: 10.1.2.50
+```
+
+#### 6. **Gateway spoofs MAC and requests DHCPv6** (if available)
+```
+eth0 MAC → aa:bb:cc:dd:ee:ff
+odhcp6c requests IPv6
+Firewall sees registered MAC → allows
+Gateway gets: 2001:db8::1234
+```
+
+#### 7. **Device fully configured**
+```json
+{
+  "mac_address": "aa:bb:cc:dd:ee:ff",
+  "ipv4_address": "192.168.1.100",      // LAN IPv4
+  "ipv4_wan_address": "10.1.2.50",      // WAN IPv4
+  "ipv6_address": "2001:db8::1234",     // WAN IPv6
+  "status": "active"
+}
+```
+
+#### 8. **Traffic flows transparently**
+- Device sends to 192.168.1.1 (gateway)
+- Gateway NATs through appropriate WAN address(es)
+- Response returns to device seamlessly
+
+### Discovery Process Diagram
+
+```
+Device Connects
+       │
+       ▼
+ARP Monitoring (10s interval)
+       │
+       ▼
+New MAC Detected
+       │
+       ▼
+Detect WAN Protocols
+       │
+       ├────────────┬────────────┐
+       │            │            │
+  IPv4 Available  IPv6 Available Both
+       │            │            │
+       ▼            ▼            ▼
+  Request DHCPv4  Request DHCPv6  Request Both
+       │            │            │
+       ▼            ▼            ▼
+  Get IPv4 WAN   Get IPv6 WAN   Get Both
+       │            │            │
+       └────────────┴────────────┘
+                    │
+                    ▼
+            Device Active
+                    │
+                    ▼
+          NAT Traffic Flow
+```
+
+---
+
+## 🌐 Supported Network Types
+
+### ✅ IPv4-Only Network
+```
+eth0 connected to IPv4-only network
+↓
+Gateway detects: IPv4 ✓, IPv6 ✗
+↓
+Requests DHCPv4 only (spoofs MAC)
+↓
+Device gets WAN IPv4 address
+↓
+Traffic uses IPv4 NAT
+```
+
+**Use case:** Traditional enterprise networks, older ISPs
+
+### ✅ IPv6-Only Network
+```
+eth0 connected to IPv6-only network
+↓
+Gateway detects: IPv4 ✗, IPv6 ✓
+↓
+Requests DHCPv6 only (spoofs MAC)
+↓
+Device gets WAN IPv6 address
+↓
+Traffic uses IPv6 (464XLAT for IPv4 apps)
+```
+
+**Use case:** Modern ISPs, mobile networks, IPv6-native deployments
+
+### ✅ Dual-Stack Network (Most Common)
+```
+eth0 connected to dual-stack network
+↓
+Gateway detects: IPv4 ✓, IPv6 ✓
+↓
+Requests BOTH DHCPv4 AND DHCPv6 (spoofs MAC)
+↓
+Device gets both WAN IPv4 + IPv6 addresses
+↓
+Traffic uses both protocols (prefer IPv4)
+```
+
+**Use case:** Modern enterprise networks, ISPs with transition strategy
+
+---
+
+## 📦 Deployment
+
+### Step 1: Deploy to Router
+
+```bash
+# On your development machine:
+./quick-deploy.sh root@<router-ip> --full-auto
+```
+
+This automatically:
+- Copies all files
+- Installs dependencies
+- Configures dual-stack network
+- Starts service
+
+### Step 2: Verify Installation
+
+```bash
+# SSH to router
+ssh root@<router-ip>
+
+# Run comprehensive diagnostic
+gateway-diagnose
+
+# Expected output:
+#  ✓ eth1 has 192.168.1.1/24
+#  ✓ Gateway service is running
+#  ✓ API server responding
+#  ✓ All checks passed
+```
+
+### Step 3: Register Device MACs ⚠️ CRITICAL
+
+**Before devices can obtain WAN addresses, their MACs must be registered with the upstream firewall!**
+
+```bash
+# This is YOUR responsibility - register each device MAC
+# with your firewall/network administrator before deployment
+
+# Example MACs to register:
+# - aa:bb:cc:dd:ee:01
+# - aa:bb:cc:dd:ee:02
+# - aa:bb:cc:dd:ee:03
+```
+
+### Step 4: Connect Test Device
+
+```bash
+# Connect a device to eth1 physical port
+# Watch logs in real-time:
+tail -f /var/log/ipv4-ipv6-gateway.log
+
+# Expected log output:
+# [INFO] New device discovered: aa:bb:cc:dd:ee:ff (IPv4: 192.168.1.100)
+# [INFO] WAN protocols detected - IPv4: True, IPv6: True
+# [INFO] Requesting DHCPv4 for aa:bb:cc:dd:ee:ff (WAN has IPv4)
+# [INFO] Successfully obtained IPv4 10.1.2.50 for MAC aa:bb:cc:dd:ee:ff
+# [INFO] Requesting DHCPv6 for aa:bb:cc:dd:ee:ff (WAN has IPv6)
+# [INFO] Successfully obtained IPv6 2001:db8::1234 for MAC aa:bb:cc:dd:ee:ff
+# [INFO] Device aa:bb:cc:dd:ee:ff successfully configured - IPv4: 10.1.2.50, IPv6: 2001:db8::1234
+```
+
+### Step 5: Test Connectivity
+
+```bash
+# From your test device (connected to eth1):
+
+# Test LAN connectivity
+ping 192.168.1.1
+
+# Test external IPv4 (if WAN has IPv4)
+ping 8.8.8.8
+
+# Test external IPv6 (if WAN has IPv6)
+ping6 2001:4860:4860::8888
+
+# All should work!
+```
 
 ---
 
 ## 📖 Usage
 
-### Diagnostic Tool
-
-**Check system health and apply fixes automatically:**
-
-```bash
-# Run comprehensive diagnostic (14 checks)
-gateway-diagnose
-
-# Apply network configuration fix
-gateway-diagnose --fix-network
-
-# Restart gateway service
-gateway-diagnose --fix-service
-
-# Apply all fixes automatically
-gateway-diagnose --fix-all
-```
-
-**What it checks:**
-- ✅ Network configuration (eth0/eth1)
-- ✅ IP address assignments (192.168.1.1)
-- ✅ DHCP server status
-- ✅ Gateway service status
-- ✅ API server connectivity (port 5050)
-- ✅ Firewall and forwarding settings
-
-### Gateway Status
+### Check Gateway Status
 
 ```bash
 # Quick status check
@@ -206,7 +404,7 @@ gateway-status
 }
 ```
 
-### Device Management
+### List Devices
 
 ```bash
 # List all devices
@@ -225,7 +423,8 @@ gateway-devices inactive
     {
       "mac_address": "aa:bb:cc:dd:ee:01",
       "ipv4_address": "192.168.1.100",
-      "ipv6_address": "2001:db8::1",
+      "ipv4_wan_address": "10.1.2.50",
+      "ipv6_address": "2001:db8::1234",
       "status": "active",
       "discovered_at": "2024-01-01T12:00:00",
       "last_seen": "2024-01-01T12:05:00"
@@ -250,66 +449,29 @@ grep -i error /var/log/ipv4-ipv6-gateway.log
 tail -f /var/log/ipv4-ipv6-gateway.log | grep -i discover
 ```
 
-### API Endpoints
-
-The gateway provides a REST API on port 5050:
+### Diagnostic Tool
 
 ```bash
-# Health check with detailed metrics
-curl http://localhost:5050/health
+# Run comprehensive diagnostic (14 checks)
+gateway-diagnose
 
-# Full gateway status
-curl http://localhost:5050/status
+# Apply network configuration fix
+gateway-diagnose --fix-network
 
-# List all devices
-curl http://localhost:5050/devices
+# Restart gateway service
+gateway-diagnose --fix-service
 
-# Filter by status
-curl http://localhost:5050/devices?status=active
-
-# Get specific device by MAC
-curl http://localhost:5050/devices/aa:bb:cc:dd:ee:01
-
-# Export device mappings (admin)
-curl -X POST http://localhost:5050/admin/export > backup.json
-
-# Clear device cache (admin)
-curl -X POST http://localhost:5050/admin/clear-cache \
-  -H "Content-Type: application/json" \
-  -d '{"confirm": true}'
+# Apply all fixes automatically
+gateway-diagnose --fix-all
 ```
 
-### Service Management
-
-**OpenWrt (init.d):**
-```bash
-# Start/stop/restart
-/etc/init.d/ipv4-ipv6-gateway start
-/etc/init.d/ipv4-ipv6-gateway stop
-/etc/init.d/ipv4-ipv6-gateway restart
-
-# Enable/disable auto-start
-/etc/init.d/ipv4-ipv6-gateway enable
-/etc/init.d/ipv4-ipv6-gateway disable
-
-# Check status
-/etc/init.d/ipv4-ipv6-gateway status
-```
-
-**Systemd (if available):**
-```bash
-# Start/stop/restart
-systemctl start ipv4-ipv6-gateway
-systemctl stop ipv4-ipv6-gateway
-systemctl restart ipv4-ipv6-gateway
-
-# Enable/disable auto-start
-systemctl enable ipv4-ipv6-gateway
-systemctl disable ipv4-ipv6-gateway
-
-# Check status
-systemctl status ipv4-ipv6-gateway
-```
+**What it checks:**
+- ✅ Network configuration (eth0/eth1)
+- ✅ IP address assignments
+- ✅ DHCP server status
+- ✅ Gateway service status
+- ✅ API server connectivity
+- ✅ Firewall and forwarding settings
 
 ---
 
@@ -317,7 +479,7 @@ systemctl status ipv4-ipv6-gateway
 
 ### Network Configuration
 
-The installer creates network configuration at `/etc/ipv4-ipv6-gateway/network-config.uci`:
+The installer creates dual-stack network config at `/etc/ipv4-ipv6-gateway/network-config.uci`:
 
 ```uci
 # eth1 (LAN) - IPv4 devices side
@@ -326,12 +488,15 @@ config interface 'lan'
     option proto 'static'
     option ipaddr '192.168.1.1'
     option netmask '255.255.255.0'
-    option ip6assign '60'
 
-# eth0 (WAN) - IPv6 network side
+# eth0 (WAN) - Dual-stack
 config interface 'wan'
     option device 'eth0'
-    option proto 'dhcpv6'
+    option proto 'dhcp'          # DHCPv4
+
+config interface 'wan6'
+    option device 'eth0'
+    option proto 'dhcpv6'        # DHCPv6
     option reqaddress 'try'
     option reqprefix 'auto'
 ```
@@ -343,25 +508,18 @@ uci commit
 /etc/init.d/network restart
 ```
 
-### DHCP Configuration
+### Firewall Configuration
 
-DHCP server configuration at `/etc/ipv4-ipv6-gateway/dhcp-config.uci`:
+NAT/masquerading enabled automatically:
 
 ```uci
-# DHCP server for LAN interface
-config dhcp 'lan'
-    option interface 'lan'
-    option start '100'          # Start IP: 192.168.1.100
-    option limit '150'          # Limit: 150 addresses
-    option leasetime '12h'
-    option dhcpv4 'server'
-```
+config zone 'wan'
+    option masq '1'              # NAT enabled
+    option mtu_fix '1'
 
-**Apply changes:**
-```bash
-uci import dhcp < /etc/ipv4-ipv6-gateway/dhcp-config.uci
-uci commit
-/etc/init.d/dnsmasq restart
+config forwarding
+    option src 'lan'
+    option dest 'wan'
 ```
 
 ### Service Settings
@@ -370,38 +528,83 @@ Edit `/opt/ipv4-ipv6-gateway/gateway_config.py`:
 
 ```python
 # Network interfaces
-ETH0_INTERFACE = 'eth0'  # IPv6 side (network)
-ETH1_INTERFACE = 'eth1'  # IPv4 side (devices)
+ETH0_INTERFACE = 'eth0'  # WAN (network side)
+ETH1_INTERFACE = 'eth1'  # LAN (devices side)
 
 # Monitoring intervals
 ARP_MONITOR_INTERVAL = 10       # Check for new devices every 10s
 DEVICE_MONITOR_INTERVAL = 30    # Update status every 30s
-DEVICE_STATUS_TIMEOUT = 300     # Mark inactive after 5 minutes
 
-# DHCPv6 settings with retry
+# DHCPv4 settings
+DHCPV4_TIMEOUT = 10             # Wait 10s for DHCPv4 response
+DHCPV4_RETRY_COUNT = 3          # Retry 3 times on failure
+DHCPV4_RETRY_DELAY = 5          # Initial delay: 5s
+
+# DHCPv6 settings
 DHCPV6_TIMEOUT = 10             # Wait 10s for DHCPv6 response
 DHCPV6_RETRY_COUNT = 3          # Retry 3 times on failure
-DHCPV6_RETRY_DELAY = 5          # Initial delay: 5s (exponential backoff)
+DHCPV6_RETRY_DELAY = 5          # Initial delay: 5s
 
 # API Server
 API_ENABLED = True
-API_HOST = '0.0.0.0'            # Bind to all interfaces (0.0.0.0)
-API_PORT = 5050                 # API port
-
-# Logging
-LOG_LEVEL = 'INFO'              # INFO, DEBUG, WARNING, ERROR
-LOG_FILE = '/var/log/ipv4-ipv6-gateway.log'
+API_HOST = '0.0.0.0'            # Bind to all interfaces
+API_PORT = 5050
 ```
 
-### Local Overrides
+---
 
-Create `/etc/ipv4-ipv6-gateway/config.py` for deployment-specific settings:
+## 📊 Monitoring & Management
 
-```python
-# Override gateway_config.py settings here
-LOG_LEVEL = 'DEBUG'
-ARP_MONITOR_INTERVAL = 5
-API_PORT = 8888
+### CLI Tools
+
+```bash
+gateway-status              # Overall status
+gateway-devices             # List all devices
+gateway-devices active      # Active devices only
+gateway-diagnose            # Full diagnostic
+```
+
+### REST API
+
+The gateway provides a REST API on port 5050:
+
+```bash
+# Health check
+curl http://192.168.1.1:5050/health
+
+# Gateway status
+curl http://192.168.1.1:5050/status
+
+# List all devices
+curl http://192.168.1.1:5050/devices
+
+# Filter by status
+curl http://192.168.1.1:5050/devices?status=active
+
+# Get specific device by MAC
+curl http://192.168.1.1:5050/devices/aa:bb:cc:dd:ee:01
+
+# Export device mappings (admin)
+curl -X POST http://192.168.1.1:5050/admin/export > backup.json
+
+# Clear device cache (admin)
+curl -X POST http://192.168.1.1:5050/admin/clear-cache \
+  -H "Content-Type: application/json" \
+  -d '{"confirm": true}'
+```
+
+### Service Management
+
+**OpenWrt (init.d):**
+```bash
+/etc/init.d/ipv4-ipv6-gateway start
+/etc/init.d/ipv4-ipv6-gateway stop
+/etc/init.d/ipv4-ipv6-gateway restart
+/etc/init.d/ipv4-ipv6-gateway status
+
+# Enable/disable auto-start
+/etc/init.d/ipv4-ipv6-gateway enable
+/etc/init.d/ipv4-ipv6-gateway disable
 ```
 
 ---
@@ -416,144 +619,80 @@ API_PORT = 8888
 # Run comprehensive diagnostic
 gateway-diagnose
 
-# See what's wrong and get fix suggestions
-# Then apply fixes automatically
+# Apply fixes automatically
 gateway-diagnose --fix-all
 ```
 
 ### Common Issues
 
-#### 1. Ping to 192.168.1.1 Fails
+#### 1. Device Not Getting DHCP on LAN
 
-**Symptom:** `ping 192.168.1.1` returns 100% packet loss
-
-**Cause:** Network configuration not applied to eth1
+**Symptom:** Device connected to eth1 doesn't get 192.168.1.x address
 
 **Fix:**
 ```bash
-gateway-diagnose --fix-network
-# OR manually:
-uci import network < /etc/ipv4-ipv6-gateway/network-config.uci
-uci commit
-/etc/init.d/network restart
-```
-
-#### 2. Helper Scripts Can't Connect to API
-
-**Symptom:** `gateway-status` returns "Failed to connect to API server"
-
-**Cause:**
-- Network config not applied (eth1 doesn't have 192.168.1.1)
-- Service not running
-- API server crashed
-
-**Fix:**
-```bash
-# Check if service is running
-ps | grep ipv4_ipv6_gateway
-
-# Check if API is listening
-netstat -tuln | grep 5050
-
-# If service is running but API not accessible:
-gateway-diagnose --fix-network
-
-# If service is not running:
-gateway-diagnose --fix-service
-```
-
-#### 3. Devices Not Being Discovered
-
-**Symptom:** Connected devices don't appear in `gateway-devices`
-
-**Cause:**
-- ARP table not populated
-- Device not getting DHCP lease
-- Service not monitoring ARP
-
-**Fix:**
-```bash
-# Check ARP table manually
-ip neigh show dev eth1
-# OR (if net-tools installed)
-arp -i eth1 -n
-
-# Ping device to force ARP entry
-ping 192.168.1.100
-
-# Check logs for discovery
-tail -f /var/log/ipv4-ipv6-gateway.log | grep -i discover
-
-# Verify DHCP server is running
+# Check if dnsmasq is running
 ps | grep dnsmasq
-/etc/init.d/dnsmasq status
 
 # Check DHCP leases
 cat /tmp/dhcp.leases
+
+# Check eth1 has correct IP
+ip addr show eth1 | grep "inet "
+# Should show: inet 192.168.1.1/24
+
+# Apply network fix
+gateway-diagnose --fix-network
 ```
 
-#### 4. DHCPv6 Requests Failing
+#### 2. MAC Not Getting WAN Address
 
-**Symptom:** Devices discovered but no IPv6 address assigned
+**Symptom:** Device discovered but no WAN IPv4/IPv6 assigned
 
-**Cause:**
-- eth0 not up or not configured for DHCPv6
-- DHCPv6 server not responding
-- MAC spoofing failed
+**Cause:** MAC not registered with firewall (most common)
 
 **Fix:**
 ```bash
-# Check eth0 status
-ip link show eth0
-ip -6 addr show eth0
+# 1. REGISTER THE MAC WITH YOUR FIREWALL!
+#    This is YOUR responsibility - the gateway cannot do this
 
-# Test DHCPv6 manually
+# 2. Check logs for DHCP errors
+tail -50 /var/log/ipv4-ipv6-gateway.log | grep ERROR
+
+# 3. Verify protocols detected
+gateway-status | grep -A2 eth0
+
+# 4. Test DHCP manually
+# For IPv4:
+udhcpc -i eth0 -n -q -f
+# For IPv6:
 odhcp6c -P 0 eth0
-
-# Check logs for DHCPv6 attempts
-grep -i dhcpv6 /var/log/ipv4-ipv6-gateway.log
-
-# Verify eth0 configuration
-uci show network.wan
 ```
 
-#### 5. Service Won't Start
+#### 3. Gateway Service Won't Start
 
-**Symptom:** Service fails to start or immediately crashes
-
-**Cause:**
-- Missing dependencies
-- Configuration errors
-- Port 5050 already in use
+**Symptom:** Service fails to start or crashes
 
 **Fix:**
 ```bash
+# Check for errors
+/etc/init.d/ipv4-ipv6-gateway start
+
+# View logs
+tail -50 /var/log/ipv4-ipv6-gateway.log
+
+# Run diagnostic
+gateway-diagnose --fix-all
+
 # Check dependencies
 opkg list-installed | grep python3
 opkg list-installed | grep odhcp6c
-
-# Run service manually to see errors
-python3 /opt/ipv4-ipv6-gateway/ipv4_ipv6_gateway.py
-
-# Check logs
-tail -50 /var/log/ipv4-ipv6-gateway.log
-
-# Check if port is in use
-netstat -tlnp | grep 5050
-
-# Reinstall dependencies
-opkg update
-opkg install python3 odhcp6c iptables ip-full
+opkg list-installed | grep busybox  # includes udhcpc
 ```
 
-#### 6. API Not Responding
+#### 4. API Not Responding
 
-**Symptom:** API endpoints return connection refused or timeout
-
-**Cause:**
-- API not listening on expected interface
-- Firewall blocking port 5050
-- API server crashed
+**Symptom:** API endpoints return connection refused
 
 **Fix:**
 ```bash
@@ -563,153 +702,51 @@ curl -v http://192.168.1.1:5050/health
 
 # Check if API is listening
 netstat -tlnp | grep 5050
-ss -tlnp | grep 5050
 
-# Check API configuration
-grep API_HOST /opt/ipv4-ipv6-gateway/gateway_config.py
-# Should show: API_HOST = "0.0.0.0"
+# Check service is running
+ps | grep ipv4_ipv6_gateway
 
-# Check firewall
-iptables -L INPUT -n | grep 5050
-
-# Check API logs
+# Check logs
 tail -f /var/log/ipv4-ipv6-gateway.log | grep -i api
 ```
 
-#### 7. SSH Disconnects During Network Config
+#### 5. Only IPv4 or IPv6 Working (Not Both)
 
-**Symptom:** SSH session drops when applying network configuration
+**Symptom:** Devices only get one type of WAN address
 
-**Cause:** Normal behavior - network restart disconnects active connections
-
-**Fix:**
-```bash
-# Wait 10-15 seconds for network to stabilize
-# Reconnect to new IP
-ssh root@192.168.1.1
-
-# If you can't reconnect, router might have different IP
-# Check router's physical display or connect via serial console
-```
-
-### Diagnostic Tool Details
-
-The `gateway-diagnose` tool performs 14 comprehensive checks:
-
-**Network Configuration:**
-1. eth1 (LAN) configured with 192.168.1.1/24
-2. eth1 runtime IP matches configuration
-3. eth0 (WAN) configured for DHCPv6
-
-**DHCP Server:**
-4. DHCP server configured for LAN
-5. dnsmasq (DHCP) is running
-
-**Gateway Service:**
-6. Service script exists
-7. Service is enabled
-8. Service process is running
-
-**API Server:**
-9. API server listening on port 5050
-10. API accessible via 127.0.0.1:5050
-11. API accessible via 192.168.1.1:5050
-
-**Firewall & Forwarding:**
-12. IPv4 forwarding enabled
-13. IPv6 forwarding enabled
-14. iptables FORWARD rules exist
-
-### View Detailed Logs
+**This is expected behavior!** The gateway adapts to WAN network:
 
 ```bash
-# Last 50 lines
-tail -50 /var/log/ipv4-ipv6-gateway.log
+# Check what's available on WAN
+ip addr show eth0
 
-# Real-time monitoring
-tail -f /var/log/ipv4-ipv6-gateway.log
+# If you see only IPv4 addresses:
+# → Gateway will only request DHCPv4
 
-# Filter for errors
-grep -i error /var/log/ipv4-ipv6-gateway.log
+# If you see only IPv6 addresses:
+# → Gateway will only request DHCPv6
 
-# Filter for specific device
-grep "aa:bb:cc:dd:ee:ff" /var/log/ipv4-ipv6-gateway.log
-
-# System logs (OpenWrt)
-logread | grep -i gateway
-```
-
-### Restore Original Configuration
-
-If you need to restore the original network configuration:
-
-```bash
-# Restore network config
-cp /etc/ipv4-ipv6-gateway/network.original /etc/config/network
-cp /etc/ipv4-ipv6-gateway/dhcp.original /etc/config/dhcp
-uci commit
-/etc/init.d/network restart
-/etc/init.d/dnsmasq restart
+# If you see both:
+# → Gateway will request both DHCPv4 and DHCPv6
 ```
 
 ---
 
 ## 🔧 Advanced Topics
 
-### Security Considerations
-
-#### API Access
-
-By default, the API listens on `0.0.0.0:5050` (all interfaces) for compatibility.
-
-**To restrict to localhost only:**
-```python
-# Edit /opt/ipv4-ipv6-gateway/gateway_config.py
-API_HOST = '127.0.0.1'  # Localhost only
-```
-
-**To enable remote access with firewall:**
-```bash
-# Add firewall rule to allow port 5050
-iptables -A INPUT -p tcp --dport 5050 -j ACCEPT
-```
-
-**⚠️ WARNING**: The API has no authentication. Only expose to trusted networks.
-
-#### MAC Spoofing
-
-This service spoofs MAC addresses to request DHCPv6. Ensure:
-- You have authorization to use MAC spoofing on your network
-- Your IPv6 network firewall is configured to expect this behavior
-- Device MACs are properly registered on the firewall
-
-#### Firewall Configuration
-
-```bash
-# Allow forwarding between interfaces
-iptables -A FORWARD -i eth0 -o eth1 -j ACCEPT
-iptables -A FORWARD -i eth1 -o eth0 -j ACCEPT
-
-# Allow established connections
-iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
-```
-
 ### File Structure
 
 ```
 /opt/ipv4-ipv6-gateway/           # Service installation
-├── ipv4_ipv6_gateway.py          # Main service
+├── ipv4_ipv6_gateway.py          # Main service (dual-stack!)
 ├── gateway_config.py             # Configuration
 └── gateway_api_server.py         # REST API server
 
 /etc/ipv4-ipv6-gateway/           # Configuration directory
 ├── devices.json                  # Device mappings (persistent)
-├── devices.json.bak              # Automatic backup
-├── network-config.uci            # Network config
-├── dhcp-config.uci               # DHCP config
-├── network.original              # Original network backup
-├── dhcp.original                 # Original DHCP backup
-└── config.py                     # Local overrides (optional)
+├── network-config.uci            # Network config template
+├── dhcp-config.uci               # DHCP config template
+└── firewall-config.uci           # Firewall config template
 
 /var/log/                         # Logs
 └── ipv4-ipv6-gateway.log         # Service logs
@@ -720,10 +757,47 @@ iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
 └── gateway-diagnose              # Diagnostic tool
 
 /etc/init.d/                      # Service scripts
-└── ipv4-ipv6-gateway             # Init.d script (OpenWrt)
+└── ipv4-ipv6-gateway             # Init.d script
+```
 
-/etc/systemd/system/              # Systemd (if applicable)
-└── ipv4-ipv6-gateway.service     # Systemd unit file
+### Security Considerations
+
+#### API Access
+
+By default, the API listens on `0.0.0.0:5050` (all interfaces).
+
+**To restrict to localhost:**
+```python
+# Edit /opt/ipv4-ipv6-gateway/gateway_config.py
+API_HOST = '127.0.0.1'  # Localhost only
+```
+
+**⚠️ WARNING**: The API has no authentication. Only expose to trusted networks.
+
+#### MAC Spoofing
+
+This service spoofs MAC addresses to request DHCP. Ensure:
+- You have authorization to use MAC spoofing on your network
+- Your firewall is configured to expect this behavior
+- Device MACs are properly registered
+
+### Performance Tuning
+
+Edit `/opt/ipv4-ipv6-gateway/gateway_config.py`:
+
+```python
+# Faster discovery (uses more CPU)
+ARP_MONITOR_INTERVAL = 5        # Check every 5s
+
+# Slower discovery (uses less CPU)
+ARP_MONITOR_INTERVAL = 30       # Check every 30s
+
+# Adjust timeouts
+DHCPV4_TIMEOUT = 15             # Slower networks
+DHCPV6_TIMEOUT = 15
+
+# Increase max devices
+MAX_DEVICES = 2000              # Default: 1000
 ```
 
 ### Uninstallation
@@ -736,62 +810,51 @@ bash uninstall.sh
 bash uninstall.sh --restore-network
 ```
 
-**Safe uninstall**: Everything is backed up to a timestamped directory:
-```
-/root/ipv4-ipv6-gateway_backup_YYYYMMDD_HHMMSS/
-```
+---
 
-### Testing & Verification
+## ✅ Pre-Deployment Checklist
 
-```bash
-# Run comprehensive health check
-bash verify.sh
+- [ ] **Register device MACs with firewall** ⚠️ CRITICAL
+- [ ] Deploy gateway to router (`./quick-deploy.sh`)
+- [ ] Verify network config applied (`ip addr show`)
+- [ ] Verify service running (`gateway-status`)
+- [ ] Connect test device to eth1
+- [ ] Verify device discovered (`gateway-devices`)
+- [ ] Verify WAN addresses obtained (check logs)
+- [ ] Test connectivity (ping from device)
 
-# Manual testing workflow
-/etc/init.d/ipv4-ipv6-gateway start
-gateway-status
-# Connect test device to eth1
-tail -f /var/log/ipv4-ipv6-gateway.log
-# Wait 10-15 seconds for discovery
-gateway-devices
-curl http://localhost:5050/devices
-```
+---
 
-### Performance Tuning
+## 🎉 What's Included
 
-Edit `/opt/ipv4-ipv6-gateway/gateway_config.py`:
+The gateway is **fully functional** and supports:
 
-```python
-# Faster discovery (uses more CPU)
-ARP_MONITOR_INTERVAL = 5        # Check every 5s instead of 10s
+✅ **IPv4-only networks**
+✅ **IPv6-only networks**
+✅ **Dual-stack networks**
+✅ **Per-device MAC registration**
+✅ **Automatic protocol detection**
+✅ **Dual DHCP (v4 + v6)**
+✅ **Transparent NAT**
+✅ **464XLAT ready**
+✅ **REST API monitoring**
+✅ **Comprehensive logging**
+✅ **Diagnostic tools**
+✅ **Auto-recovery**
 
-# Slower discovery (uses less CPU)
-ARP_MONITOR_INTERVAL = 30       # Check every 30s
+---
 
-# Adjust device timeout
-DEVICE_STATUS_TIMEOUT = 600     # 10 minutes instead of 5
+## 📞 Quick Reference
 
-# Increase max devices
-MAX_DEVICES = 2000              # Default: 1000
-```
-
-### Custom Integration
-
-**Webhook notifications (example):**
-
-```python
-# Add to /etc/ipv4-ipv6-gateway/config.py
-import requests
-
-def on_device_discovered(device):
-    """Called when new device is discovered"""
-    webhook_url = "https://your-webhook.com/notify"
-    requests.post(webhook_url, json={
-        "mac": device.mac_address,
-        "ipv4": device.ipv4_address,
-        "ipv6": device.ipv6_address
-    })
-```
+| Task | Command |
+|------|---------|
+| Deploy | `./quick-deploy.sh root@<ip> --full-auto` |
+| Status | `gateway-status` |
+| Devices | `gateway-devices` |
+| Logs | `tail -f /var/log/ipv4-ipv6-gateway.log` |
+| Diagnose | `gateway-diagnose` |
+| Restart | `/etc/init.d/ipv4-ipv6-gateway restart` |
+| API | `http://192.168.1.1:5050/status` |
 
 ---
 
@@ -817,6 +880,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **OpenWrt** project for the excellent embedded Linux distribution
 - **odhcp6c** for DHCPv6 client functionality
+- **udhcpc** (busybox) for DHCPv4 client functionality
 - **464XLAT** for IPv4/IPv6 translation
 
 ---
@@ -829,16 +893,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-## 🗺️ Roadmap
-
-- [ ] Add web UI for monitoring
-- [ ] Add authentication for API endpoints
-- [ ] Add metrics/Prometheus exporter
-- [ ] Add IPv6 prefix delegation support
-- [ ] Add automatic failover for multiple IPv6 uplinks
-- [ ] Add device grouping/tagging
-- [ ] Add rate limiting for device discovery
-
----
-
-**Made with ❤️ for making IPv4 devices work seamlessly on IPv6 networks**
+**Made with ❤️ for flexible dual-stack networking with MAC-based firewall registration**

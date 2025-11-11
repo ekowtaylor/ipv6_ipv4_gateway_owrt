@@ -32,6 +32,11 @@ DHCPV6_TIMEOUT = 10  # seconds
 DHCPV6_RETRY_COUNT = 3
 DHCPV6_RETRY_DELAY = 5  # seconds
 
+# DHCPv4 settings
+DHCPV4_TIMEOUT = 10  # seconds
+DHCPV4_RETRY_COUNT = 3
+DHCPV4_RETRY_DELAY = 5  # seconds
+
 # ARP monitoring
 ARP_MONITOR_INTERVAL = 10  # seconds - check for new devices
 DEVICE_MONITOR_INTERVAL = 30  # seconds - update device status
@@ -95,6 +100,7 @@ BACKUP_RETENTION = 24  # Keep 24 backups
 CMD_IP = "/usr/bin/ip"  # often /sbin/ip on OpenWrt
 CMD_ARP = "/usr/bin/arp"  # often /sbin/arp (busybox) on OpenWrt
 CMD_ODHCP6C = "/usr/sbin/odhcp6c"  # often /sbin/odhcp6c on OpenWrt
+CMD_UDHCPC = "/sbin/udhcpc"  # busybox DHCPv4 client on OpenWrt
 CMD_IPTABLES = "/usr/sbin/iptables"
 CMD_IP6TABLES = "/usr/sbin/ip6tables"
 CMD_SYSCTL = "/sbin/sysctl"
@@ -156,11 +162,12 @@ def validate_config() -> bool:
         Path(path).mkdir(parents=True, exist_ok=True)
 
     # Resolve commands (preferred path or PATH-based fallback)
-    global CMD_IP, CMD_ARP, CMD_ODHCP6C, CMD_IPTABLES, CMD_IP6TABLES, CMD_SYSCTL
+    global CMD_IP, CMD_ARP, CMD_ODHCP6C, CMD_UDHCPC, CMD_IPTABLES, CMD_IP6TABLES, CMD_SYSCTL
 
     CMD_IP = _find_command(CMD_IP)
     CMD_ARP = _find_command(CMD_ARP)
     CMD_ODHCP6C = _find_command(CMD_ODHCP6C)
+    CMD_UDHCPC = _find_command(CMD_UDHCPC)
     CMD_IPTABLES = _find_command(CMD_IPTABLES)
     CMD_IP6TABLES = _find_command(CMD_IP6TABLES)
     CMD_SYSCTL = _find_command(CMD_SYSCTL)
@@ -169,6 +176,7 @@ def validate_config() -> bool:
     commands = {
         "ip": CMD_IP,
         "odhcp6c": CMD_ODHCP6C,
+        "udhcpc": CMD_UDHCPC,
         "iptables": CMD_IPTABLES,
         "ip6tables": CMD_IP6TABLES,
         "sysctl": CMD_SYSCTL,

@@ -43,11 +43,12 @@ logger = logging.getLogger("GatewayService")
 
 @dataclass
 class DeviceMapping:
-    """Represents an IPv4 device and its discovered IPv6 address"""
+    """Represents an IPv4 device and its discovered WAN addresses (IPv4 and/or IPv6)"""
 
     mac_address: str
-    ipv4_address: Optional[str] = None
-    ipv6_address: Optional[str] = None
+    ipv4_address: Optional[str] = None  # LAN IPv4 (192.168.1.x)
+    ipv4_wan_address: Optional[str] = None  # WAN IPv4 (from DHCPv4 on eth0)
+    ipv6_address: Optional[str] = None  # WAN IPv6 (from DHCPv6 on eth0)
     discovered_at: Optional[str] = None
     last_seen: Optional[str] = None
     status: str = "pending"  # pending, discovering, active, inactive, failed, error
@@ -166,6 +167,43 @@ class NetworkInterface:
             return True
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to flush IPv6 addresses: {e}")
+            return False
+
+    def get_ipv4_addresses(self) -> List[str]:
+        """Get all IPv4 addresses on interface (excluding loopback)"""
+        try:
+            result = subprocess.run(
+                [cfg.CMD_IP, "-4", "addr", "show", self.interface_name],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            addresses: List[str] = []
+            for line in result.stdout.splitlines():
+                # inet 192.168.1.1/24 brd 192.168.1.255 scope global eth1
+                match = re.search(r"inet\s+([0-9.]+)", line)
+                if match:
+                    addr = match.group(1)
+                    # Skip loopback
+                    if not addr.startswith("127."):
+                        addresses.append(addr)
+            return addresses
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to get IPv4 addresses: {e}")
+            return []
+
+    def flush_ipv4_addresses(self) -> bool:
+        """Remove all IPv4 addresses from interface"""
+        try:
+            subprocess.run(
+                [cfg.CMD_IP, "-4", "addr", "flush", "dev", self.interface_name],
+                check=True,
+                capture_output=True,
+            )
+            self.logger.info(f"Flushed IPv4 addresses from {self.interface_name}")
+            return True
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to flush IPv4 addresses: {e}")
             return False
 
 
@@ -393,6 +431,140 @@ class DHCPv6Manager:
             return False
 
 
+class DHCPv4Manager:
+    """Manages DHCPv4 requests with MAC spoofing"""
+
+    def __init__(self, interface: str, timeout: int = cfg.DHCPV4_TIMEOUT):
+        self.interface = interface
+        self.timeout = timeout
+        self.logger = logging.getLogger("DHCPv4Manager")
+        self.iface = NetworkInterface(interface)
+
+    def request_ipv4_for_mac(self, mac: str) -> Optional[str]:
+        """
+        Spoof MAC on interface, request DHCPv4, return assigned IPv4 address.
+        Uses exponential backoff retry logic for reliability.
+        """
+        self.logger.info(f"Requesting IPv4 for MAC: {mac}")
+
+        original_mac = self.iface.get_mac_address()
+
+        try:
+            self.iface.flush_ipv4_addresses()
+
+            if not self.iface.set_mac_address(mac):
+                self.logger.error(f"Failed to spoof MAC {mac}")
+                return None
+
+            time.sleep(1)
+
+            # Retry with exponential backoff
+            for attempt in range(cfg.DHCPV4_RETRY_COUNT):
+                attempt_num = attempt + 1
+                self.logger.debug(
+                    f"DHCPv4 attempt {attempt_num}/{cfg.DHCPV4_RETRY_COUNT} for MAC {mac}"
+                )
+
+                if self._request_dhcpv4():
+                    time.sleep(2)
+                    addresses = self.iface.get_ipv4_addresses()
+
+                    if addresses:
+                        ipv4 = addresses[0]
+                        self.logger.info(
+                            f"Successfully obtained IPv4 {ipv4} for MAC {mac} "
+                            f"(attempt {attempt_num})"
+                        )
+                        return ipv4
+                    else:
+                        self.logger.warning(
+                            f"DHCPv4 succeeded but no IPv4 assigned for MAC {mac} "
+                            f"(attempt {attempt_num})"
+                        )
+                else:
+                    self.logger.warning(
+                        f"DHCPv4 request failed for MAC {mac} (attempt {attempt_num})"
+                    )
+
+                # Exponential backoff: wait longer after each failed attempt
+                if attempt < cfg.DHCPV4_RETRY_COUNT - 1:
+                    backoff_time = cfg.DHCPV4_RETRY_DELAY * (2**attempt)
+                    self.logger.debug(f"Waiting {backoff_time}s before retry...")
+                    time.sleep(backoff_time)
+
+            # All retries failed
+            self.logger.error(
+                f"All {cfg.DHCPV4_RETRY_COUNT} DHCPv4 attempts failed for MAC {mac}"
+            )
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Exception during DHCPv4 request: {e}")
+            return None
+        finally:
+            if original_mac:
+                self.iface.set_mac_address(original_mac)
+
+    def _request_dhcpv4(self) -> bool:
+        """Execute DHCPv4 request using udhcpc (busybox DHCP client)"""
+        try:
+            # udhcpc options:
+            # -i interface: specify interface
+            # -n: exit if lease is not obtained
+            # -q: quit after obtaining lease
+            # -f: run in foreground
+            # -t N: send up to N discover packets
+            # -T TIMEOUT: pause between packets (default 3s)
+            # -s script: run this script (use /bin/true to ignore)
+            process = subprocess.Popen(
+                [
+                    cfg.CMD_UDHCPC,
+                    "-i",
+                    self.interface,
+                    "-n",  # exit if lease not obtained
+                    "-q",  # quit after obtaining lease
+                    "-f",  # foreground
+                    "-t",
+                    "3",  # 3 discovery attempts
+                    "-T",
+                    "3",  # 3 second timeout between attempts
+                    "-s",
+                    "/bin/true",  # don't run any script
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            try:
+                stdout, stderr = process.communicate(timeout=self.timeout)
+                return_code = process.returncode
+
+                if return_code == 0:
+                    self.logger.debug("DHCPv4 request succeeded")
+                    return True
+                else:
+                    self.logger.warning(
+                        f"DHCPv4 request failed with exit code {return_code}: {stderr.decode()}"
+                    )
+                    return False
+
+            except subprocess.TimeoutExpired:
+                self.logger.warning(
+                    "DHCPv4 request timed out after %s seconds, terminating",
+                    self.timeout,
+                )
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                return False
+
+        except Exception as e:
+            self.logger.error(f"DHCPv4 request error: {e}")
+            return False
+
+
 class DeviceStore:
     """Persistent storage for device mappings"""
 
@@ -512,6 +684,7 @@ class GatewayService:
 
         self.arp_monitor = ARPMonitor(interface=cfg.ETH1_INTERFACE)
         self.dhcpv6_manager = DHCPv6Manager(interface=cfg.ETH0_INTERFACE)
+        self.dhcpv4_manager = DHCPv4Manager(interface=cfg.ETH0_INTERFACE)
         self.device_store = DeviceStore(config_dir)
         self.firewall = FirewallManager()
         self.eth0 = NetworkInterface(cfg.ETH0_INTERFACE)
@@ -524,6 +697,18 @@ class GatewayService:
         self.running = False
         self.discovery_thread: Optional[threading.Thread] = None
         self.monitor_thread: Optional[threading.Thread] = None
+
+    def detect_wan_protocols(self) -> tuple:
+        """
+        Detect available protocols on WAN interface (eth0).
+        Returns (has_ipv4, has_ipv6) tuple.
+        """
+        has_ipv4 = len(self.eth0.get_ipv4_addresses()) > 0
+        has_ipv6 = len(self.eth0.get_ipv6_addresses()) > 0
+
+        self.logger.info(f"WAN protocols detected - IPv4: {has_ipv4}, IPv6: {has_ipv6}")
+
+        return (has_ipv4, has_ipv6)
 
     # ---- Public API used by REST layer ----
 
@@ -758,7 +943,7 @@ class GatewayService:
                     self.logger.info("New device discovered: %s (IPv4: %s)", mac, ipv4)
 
                     thread = threading.Thread(
-                        target=self._discover_ipv6_for_device,
+                        target=self._discover_addresses_for_device,
                         args=(mac,),
                         daemon=True,
                     )
@@ -770,8 +955,11 @@ class GatewayService:
                 self.logger.error(f"Error in discovery loop: {e}")
                 time.sleep(5)
 
-    def _discover_ipv6_for_device(self, mac: str) -> None:
-        """Discover IPv6 address for a specific MAC"""
+    def _discover_addresses_for_device(self, mac: str) -> None:
+        """
+        Discover WAN addresses (IPv4 and/or IPv6) for a specific MAC address.
+        Requests DHCPv4 and/or DHCPv6 based on what protocols are available on eth0.
+        """
         try:
             with self._devices_lock:
                 device = self.devices.get(mac)
@@ -779,25 +967,66 @@ class GatewayService:
                     return
                 device.status = "discovering"
 
-            ipv6 = self.dhcpv6_manager.request_ipv6_for_mac(mac)
+            # Detect available protocols on WAN
+            has_ipv4, has_ipv6 = self.detect_wan_protocols()
 
+            # Request IPv4 if available
+            if has_ipv4:
+                self.logger.info(f"Requesting DHCPv4 for {mac} (WAN has IPv4)")
+                ipv4_wan = self.dhcpv4_manager.request_ipv4_for_mac(mac)
+
+                with self._devices_lock:
+                    device = self.devices.get(mac)
+                    if device and ipv4_wan:
+                        device.ipv4_wan_address = ipv4_wan
+                        self.logger.info(f"Device {mac} → WAN IPv4: {ipv4_wan}")
+                    elif device:
+                        self.logger.warning(f"Failed to obtain IPv4 for {mac}")
+            else:
+                self.logger.info(f"Skipping DHCPv4 for {mac} (no IPv4 on WAN)")
+
+            # Request IPv6 if available
+            if has_ipv6:
+                self.logger.info(f"Requesting DHCPv6 for {mac} (WAN has IPv6)")
+                ipv6 = self.dhcpv6_manager.request_ipv6_for_mac(mac)
+
+                with self._devices_lock:
+                    device = self.devices.get(mac)
+                    if device and ipv6:
+                        device.ipv6_address = ipv6
+                        self.logger.info(f"Device {mac} → WAN IPv6: {ipv6}")
+                    elif device:
+                        self.logger.warning(f"Failed to obtain IPv6 for {mac}")
+            else:
+                self.logger.info(f"Skipping DHCPv6 for {mac} (no IPv6 on WAN)")
+
+            # Update device status
             with self._devices_lock:
                 device = self.devices.get(mac)
                 if not device:
                     return
 
-                if ipv6:
-                    device.ipv6_address = ipv6
+                # Device is active if it got at least one address
+                if device.ipv4_wan_address or device.ipv6_address:
                     device.status = "active"
-                    self.logger.info("Device %s → %s", mac, ipv6)
+                    addresses = []
+                    if device.ipv4_wan_address:
+                        addresses.append(f"IPv4: {device.ipv4_wan_address}")
+                    if device.ipv6_address:
+                        addresses.append(f"IPv6: {device.ipv6_address}")
+                    self.logger.info(
+                        f"Device {mac} successfully configured - {', '.join(addresses)}"
+                    )
                 else:
                     device.status = "failed"
-                    self.logger.warning("Failed to discover IPv6 for %s", mac)
+                    self.logger.warning(
+                        f"Failed to discover any WAN addresses for {mac}"
+                    )
 
                 self.device_store.add_device(device)
 
         except Exception as e:
-            self.logger.error(f"Error discovering IPv6 for {mac}: {e}")
+            self.logger.error(f"Error discovering addresses for {mac}: {e}")
             with self._devices_lock:
                 if mac in self.devices:
                     self.devices[mac].status = "error"

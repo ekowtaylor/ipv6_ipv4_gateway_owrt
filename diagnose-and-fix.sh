@@ -95,23 +95,48 @@ else
     ETH1_RUNTIME_OK=0
 fi
 
-log_info "Checking eth0 configuration..."
+log_info "Checking eth0 (WAN) configuration..."
 if uci show network.wan >/dev/null 2>&1; then
     ETH0_DEVICE=$(uci get network.wan.device 2>/dev/null || echo "not set")
     ETH0_PROTO=$(uci get network.wan.proto 2>/dev/null || echo "not set")
 
     echo "  - Device: $ETH0_DEVICE"
-    echo "  - Protocol: $ETH0_PROTO"
+    echo "  - IPv4 Protocol: $ETH0_PROTO"
 
-    if [ "$ETH0_PROTO" = "dhcpv6" ]; then
-        log_success "eth0 is configured for DHCPv6"
-        ETH0_CONFIG_OK=1
+    if [ "$ETH0_PROTO" = "dhcp" ]; then
+        log_success "eth0 is configured for DHCPv4"
+        ETH0_IPV4_OK=1
     else
-        log_warning "eth0 protocol is not dhcpv6 (current: $ETH0_PROTO)"
-        ETH0_CONFIG_OK=0
+        log_warning "eth0 IPv4 protocol is not dhcp (current: $ETH0_PROTO)"
+        ETH0_IPV4_OK=0
     fi
 else
     log_error "network.wan configuration not found"
+    ETH0_IPV4_OK=0
+fi
+
+log_info "Checking eth0 (WAN) IPv6 configuration..."
+if uci show network.wan6 >/dev/null 2>&1; then
+    ETH0_IPV6_PROTO=$(uci get network.wan6.proto 2>/dev/null || echo "not set")
+
+    echo "  - IPv6 Protocol: $ETH0_IPV6_PROTO"
+
+    if [ "$ETH0_IPV6_PROTO" = "dhcpv6" ]; then
+        log_success "eth0 is configured for DHCPv6"
+        ETH0_IPV6_OK=1
+    else
+        log_warning "eth0 IPv6 protocol is not dhcpv6 (current: $ETH0_IPV6_PROTO)"
+        ETH0_IPV6_OK=0
+    fi
+else
+    log_warning "network.wan6 configuration not found (IPv6 disabled)"
+    ETH0_IPV6_OK=0
+fi
+
+# At least one should be configured
+if [ "$ETH0_IPV4_OK" -eq 1 ] || [ "$ETH0_IPV6_OK" -eq 1 ]; then
+    ETH0_CONFIG_OK=1
+else
     ETH0_CONFIG_OK=0
 fi
 
