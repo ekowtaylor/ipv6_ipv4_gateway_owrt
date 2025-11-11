@@ -1039,6 +1039,10 @@ class GatewayService:
                     self.logger.info(
                         f"Device {mac} successfully configured - {', '.join(addresses)}"
                     )
+
+                    # Setup automatic port forwarding if enabled
+                    if cfg.ENABLE_AUTO_PORT_FORWARDING and device.ipv4_address:
+                        self._setup_auto_port_forwarding(device.ipv4_address, mac)
                 else:
                     device.status = "failed"
                     self.logger.warning(
@@ -1052,6 +1056,95 @@ class GatewayService:
             with self._devices_lock:
                 if mac in self.devices:
                     self.devices[mac].status = "error"
+
+    def _setup_auto_port_forwarding(self, device_ip: str, mac: str) -> None:
+        """
+        Automatically setup port forwarding for a device.
+        Forwards common ports from gateway WAN to device LAN IP.
+        """
+        self.logger.info(f"Setting up automatic port forwarding for {device_ip} (MAC: {mac})")
+
+        wan_interface = cfg.ETH0_INTERFACE
+        lan_interface = cfg.ETH1_INTERFACE
+
+        for gateway_port, device_port in cfg.AUTO_PORT_FORWARDS.items():
+            try:
+                # DNAT rule: Forward traffic from WAN port to device
+                dnat_cmd = [
+                    cfg.CMD_IPTABLES,
+                    "-t", "nat",
+                    "-C",  # Check if rule exists
+                    "PREROUTING",
+                    "-i", wan_interface,
+                    "-p", "tcp",
+                    "--dport", str(gateway_port),
+                    "-j", "DNAT",
+                    "--to-destination", f"{device_ip}:{device_port}"
+                ]
+
+                # Check if rule already exists
+                check_result = subprocess.run(dnat_cmd, capture_output=True)
+
+                if check_result.returncode != 0:
+                    # Rule doesn't exist, add it
+                    add_dnat_cmd = dnat_cmd.copy()
+                    add_dnat_cmd[3] = "-A"  # Change -C to -A
+                    subprocess.run(add_dnat_cmd, check=True, capture_output=True)
+
+                    # FORWARD rule: Allow forwarded traffic
+                    forward_cmd = [
+                        cfg.CMD_IPTABLES,
+                        "-A", "FORWARD",
+                        "-i", wan_interface,
+                        "-o", lan_interface,
+                        "-p", "tcp",
+                        "-d", device_ip,
+                        "--dport", str(device_port),
+                        "-j", "ACCEPT"
+                    ]
+                    subprocess.run(forward_cmd, check=True, capture_output=True)
+
+                    # Return traffic
+                    return_cmd = [
+                        cfg.CMD_IPTABLES,
+                        "-A", "FORWARD",
+                        "-i", lan_interface,
+                        "-o", wan_interface,
+                        "-p", "tcp",
+                        "-s", device_ip,
+                        "--sport", str(device_port),
+                        "-j", "ACCEPT"
+                    ]
+                    subprocess.run(return_cmd, check=True, capture_output=True)
+
+                    # Local access (from gateway itself)
+                    local_cmd = [
+                        cfg.CMD_IPTABLES,
+                        "-t", "nat",
+                        "-A", "OUTPUT",
+                        "-p", "tcp",
+                        "--dport", str(gateway_port),
+                        "-j", "DNAT",
+                        "--to-destination", f"{device_ip}:{device_port}"
+                    ]
+                    subprocess.run(local_cmd, check=True, capture_output=True)
+
+                    self.logger.info(
+                        f"Port forward: gateway:{gateway_port} → {device_ip}:{device_port}"
+                    )
+                else:
+                    self.logger.debug(
+                        f"Port forward already exists: gateway:{gateway_port} → {device_ip}:{device_port}"
+                    )
+
+            except subprocess.CalledProcessError as e:
+                self.logger.warning(
+                    f"Failed to setup port forward {gateway_port}→{device_port}: {e}"
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Error setting up port forward {gateway_port}→{device_port}: {e}"
+                )
 
     def _monitoring_loop(self) -> None:
         """Monitor active devices and update status / timeouts"""

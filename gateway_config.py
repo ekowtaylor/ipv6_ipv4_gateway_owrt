@@ -74,6 +74,21 @@ DEVICE_STATUS_TIMEOUT = 300  # Mark device inactive after 5 minutes
 MAX_CONCURRENT_DHCPV6_REQUESTS = 5
 MAX_DEVICES = 1000
 
+# Automatic Port Forwarding
+# When a device is discovered, automatically forward these ports
+# Format: {gateway_port: device_port}
+ENABLE_AUTO_PORT_FORWARDING = True
+AUTO_PORT_FORWARDS = {
+    8080: 80,      # HTTP
+    2323: 23,      # Telnet
+    8443: 443,     # HTTPS
+    2222: 22,      # SSH
+    5900: 5900,    # VNC
+    3389: 3389,    # RDP
+}
+# Port forwarding will use device's LAN IP (192.168.1.x)
+# Access from WAN: gateway_wan_ip:gateway_port → device:device_port
+
 # Debugging
 DEBUG_MODE = False
 DEBUG_ARP_QUERIES = False

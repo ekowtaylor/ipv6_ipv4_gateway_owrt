@@ -239,9 +239,75 @@ tail -f /var/log/ipv4-ipv6-gateway.log
 
 ## 🌐 Port Forwarding
 
-Access services on IPv4 devices from IPv6 network (or vice versa) using built-in port forwarding.
+**NEW: Automatic port forwarding is now enabled by default!**
 
-### Quick Setup
+When a device is discovered and successfully configured, the gateway automatically forwards common ports from the gateway's WAN interface to the device's LAN IP.
+
+### Automatic Port Forwarding (Default)
+
+By default, when a device connects and gets configured, these ports are automatically forwarded:
+
+| Gateway Port | Device Port | Service |
+|--------------|-------------|---------|
+| 8080 | 80 | HTTP |
+| 2323 | 23 | Telnet |
+| 8443 | 443 | HTTPS |
+| 2222 | 22 | SSH |
+| 5900 | 5900 | VNC |
+| 3389 | 3389 | RDP |
+
+**This happens automatically - no manual setup needed!** ✨
+
+### Access from Client
+
+**From WAN network (dual-stack or IPv4 client):**
+```bash
+# Telnet to device (automatic port forward)
+telnet 192.168.8.128 2323  # Gateway WAN IP:2323 → Device:23
+
+# HTTP access
+curl http://192.168.8.128:8080  # Gateway WAN IP:8080 → Device:80
+
+# SSH access
+ssh -p 2222 user@192.168.8.128  # Gateway WAN IP:2222 → Device:22
+```
+
+**From LAN side (gateway itself):**
+```bash
+# Direct access using device's LAN IP
+telnet 192.168.1.128 23
+curl http://192.168.1.128:80
+```
+
+### Configuration
+
+To customize automatic port forwarding, edit `/opt/ipv4-ipv6-gateway/gateway_config.py`:
+
+```python
+# Enable/disable automatic port forwarding
+ENABLE_AUTO_PORT_FORWARDING = True  # Set to False to disable
+
+# Customize ports (gateway_port: device_port)
+AUTO_PORT_FORWARDS = {
+    8080: 80,      # HTTP
+    2323: 23,      # Telnet
+    8443: 443,     # HTTPS
+    2222: 22,      # SSH
+    5900: 5900,    # VNC
+    3389: 3389,    # RDP
+    # Add your own:
+    # 8888: 8888,  # Custom service
+}
+```
+
+After editing, restart the service:
+```bash
+/etc/init.d/ipv4-ipv6-gateway restart
+```
+
+### Manual Port Forwarding
+
+You can still manually add port forwards using the command-line tool:
 
 ```bash
 # Find device IP
