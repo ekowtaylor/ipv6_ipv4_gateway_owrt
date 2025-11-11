@@ -676,6 +676,62 @@ class FirewallManager:
         return True
 
 
+class WANMonitor:
+    """Monitors WAN interface for network changes"""
+
+    def __init__(self, interface: str):
+        self.interface = interface
+        self.logger = logging.getLogger("WANMonitor")
+        self.iface = NetworkInterface(interface)
+        self.last_ipv4: Optional[List[str]] = None
+        self.last_ipv6: Optional[List[str]] = None
+
+    def get_current_addresses(self) -> tuple:
+        """Get current IPv4 and IPv6 addresses on WAN interface"""
+        ipv4_addrs = self.iface.get_ipv4_addresses()
+        ipv6_addrs = self.iface.get_ipv6_addresses()
+        return (ipv4_addrs, ipv6_addrs)
+
+    def check_for_changes(self) -> bool:
+        """
+        Check if WAN network has changed.
+        Returns True if network changed, False otherwise.
+        """
+        current_ipv4, current_ipv6 = self.get_current_addresses()
+
+        # First time - just initialize
+        if self.last_ipv4 is None and self.last_ipv6 is None:
+            self.last_ipv4 = current_ipv4
+            self.last_ipv6 = current_ipv6
+            self.logger.info(
+                f"WAN monitor initialized - IPv4: {current_ipv4}, IPv6: {current_ipv6}"
+            )
+            return False
+
+        # Check for changes
+        ipv4_changed = set(current_ipv4) != set(self.last_ipv4 or [])
+        ipv6_changed = set(current_ipv6) != set(self.last_ipv6 or [])
+
+        if ipv4_changed or ipv6_changed:
+            self.logger.warning("WAN network change detected!")
+            if ipv4_changed:
+                self.logger.warning(
+                    f"  IPv4 changed: {self.last_ipv4} → {current_ipv4}"
+                )
+            if ipv6_changed:
+                self.logger.warning(
+                    f"  IPv6 changed: {self.last_ipv6} → {current_ipv6}"
+                )
+
+            # Update last known addresses
+            self.last_ipv4 = current_ipv4
+            self.last_ipv6 = current_ipv6
+
+            return True
+
+        return False
+
+
 class GatewayService:
     """Main gateway service orchestrating all components"""
 
@@ -691,6 +747,9 @@ class GatewayService:
         self.eth0 = NetworkInterface(cfg.ETH0_INTERFACE)
         self.eth1 = NetworkInterface(cfg.ETH1_INTERFACE)
 
+        # WAN network monitor (for automatic rediscovery on network changes)
+        self.wan_monitor = WANMonitor(interface=cfg.ETH0_INTERFACE) if cfg.ENABLE_WAN_MONITOR else None
+
         self.api_server: Optional[GatewayAPIServer] = None
 
         self.devices: Dict[str, DeviceMapping] = {}
@@ -698,6 +757,7 @@ class GatewayService:
         self.running = False
         self.discovery_thread: Optional[threading.Thread] = None
         self.monitor_thread: Optional[threading.Thread] = None
+        self.wan_monitor_thread: Optional[threading.Thread] = None
 
     def should_attempt_protocols(self) -> tuple:
         """
@@ -887,6 +947,16 @@ class GatewayService:
             daemon=cfg.MONITORING_THREAD_DAEMON,
         )
         self.monitor_thread.start()
+
+        # Start WAN network monitor if enabled
+        if cfg.ENABLE_WAN_MONITOR and self.wan_monitor:
+            self.wan_monitor_thread = threading.Thread(
+                target=self._wan_monitoring_loop,
+                daemon=True,
+                name="WANMonitor",
+            )
+            self.wan_monitor_thread.start()
+            self.logger.info("WAN network monitoring started")
 
         if cfg.API_ENABLED:
             self.api_server = GatewayAPIServer(
@@ -1180,6 +1250,98 @@ class GatewayService:
             except Exception as e:
                 self.logger.error(f"Error in monitoring loop: {e}")
                 time.sleep(10)
+
+    def _wan_monitoring_loop(self) -> None:
+        """
+        Monitor WAN interface for network changes and trigger re-discovery.
+        When WAN network changes (different IP addresses), all devices are
+        re-discovered to obtain new WAN addresses.
+        """
+        self.logger.info("WAN monitoring loop started")
+
+        while self.running:
+            try:
+                if self.wan_monitor and self.wan_monitor.check_for_changes():
+                    # WAN network changed!
+                    self.logger.warning(
+                        "WAN network changed - triggering device re-discovery"
+                    )
+
+                    # Wait a moment for network to stabilize
+                    time.sleep(cfg.WAN_CHANGE_REDISCOVERY_DELAY)
+
+                    # Clear all WAN addresses and trigger re-discovery
+                    self._rediscover_all_devices()
+
+                time.sleep(cfg.WAN_MONITOR_INTERVAL)
+
+            except Exception as e:
+                self.logger.error(f"Error in WAN monitoring loop: {e}")
+                time.sleep(10)
+
+    def _rediscover_all_devices(self) -> None:
+        """
+        Clear WAN addresses for all devices and trigger re-discovery.
+        Called when WAN network changes.
+        """
+        self.logger.info("Re-discovering all devices due to WAN network change")
+
+        devices_to_rediscover = []
+
+        with self._devices_lock:
+            for mac, device in self.devices.items():
+                # Clear WAN addresses
+                old_ipv4 = device.ipv4_wan_address
+                old_ipv6 = device.ipv6_address
+
+                device.ipv4_wan_address = None
+                device.ipv6_address = None
+                device.status = "discovering"
+
+                self.logger.info(
+                    f"Cleared WAN addresses for {mac} "
+                    f"(was IPv4: {old_ipv4}, IPv6: {old_ipv6})"
+                )
+
+                # Only rediscover if device is still in ARP table (active)
+                current_arp_entries = self.arp_monitor.get_arp_entries()
+                current_macs = {mac for mac, _ in current_arp_entries}
+
+                if mac in current_macs:
+                    devices_to_rediscover.append(mac)
+                else:
+                    device.status = "inactive"
+                    self.logger.info(
+                        f"Device {mac} not in ARP table, marking inactive"
+                    )
+
+            # Save updated device states
+            self.device_store.save_devices(self.devices)
+
+        # Spawn discovery threads for active devices
+        for mac in devices_to_rediscover:
+            try:
+                thread = threading.Thread(
+                    target=self._discover_addresses_for_device,
+                    args=(mac,),
+                    daemon=True,
+                    name=f"Rediscovery-{mac}",
+                )
+                thread.start()
+                self.logger.info(
+                    f"Started re-discovery thread for {mac} (thread: {thread.name})"
+                )
+            except Exception as thread_error:
+                self.logger.error(
+                    f"Failed to start re-discovery thread for {mac}: {thread_error}"
+                )
+                with self._devices_lock:
+                    if mac in self.devices:
+                        self.devices[mac].status = "error"
+
+        self.logger.info(
+            f"Re-discovery initiated for {len(devices_to_rediscover)} active devices"
+        )
 
 
 def main() -> None:

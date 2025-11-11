@@ -109,6 +109,7 @@ tail -f /var/log/ipv4-ipv6-gateway.log
 - **🔄 Robust DHCP**: 10 retries for DHCPv4, 5 for DHCPv6 with exponential backoff
 - **🔀 Transparent NAT**: Uses OpenWrt's native NAT for IPv4 traffic
 - **🌉 464XLAT Ready**: Can use 464XLAT for IPv4↔IPv6 translation when needed
+- **🔄 **NEW: WAN Network Auto-Detection**: Automatically detects WAN network changes and re-requests DHCP for all devices
 
 ### Management & Monitoring
 - **💾 Persistent Storage**: Device mappings saved to JSON with automatic backups
@@ -621,6 +622,54 @@ tail -f /var/log/ipv4-ipv6-gateway.log
 ---
 
 ## 🔧 Advanced Topics
+
+### WAN Network Auto-Detection (NEW!)
+
+The gateway automatically detects when the WAN network changes and re-requests DHCP for all devices.
+
+**How it works:**
+1. Gateway monitors eth0 (WAN) every 15 seconds
+2. Detects when IPv4 or IPv6 addresses change
+3. Automatically clears all device WAN addresses
+4. Triggers re-discovery for all active devices
+5. Devices get new WAN IPs without manual intervention
+
+**Configuration:**
+```python
+# Edit /opt/ipv4-ipv6-gateway/gateway_config.py
+
+# Enable/disable WAN monitoring
+ENABLE_WAN_MONITOR = True     # Set to False to disable
+
+# Check interval
+WAN_MONITOR_INTERVAL = 15     # Seconds between checks
+
+# Wait before re-discovery
+WAN_CHANGE_REDISCOVERY_DELAY = 5  # Seconds to wait after network change
+```
+
+**Example scenario:**
+```bash
+# 1. Device connected on Network A (192.168.8.x)
+#    WAN IP: 192.168.8.128
+
+# 2. Unplug eth0 from Network A
+#    Plug into Network B (10.0.0.x)
+
+# 3. Gateway automatically detects change:
+# [WARNING] WAN network change detected!
+# [WARNING]   IPv4 changed: ['192.168.8.128'] → ['10.0.0.50']
+# [WARNING] WAN network changed - triggering device re-discovery
+# [INFO] Cleared WAN addresses for aa:bb:cc:dd:ee:ff
+# [INFO] Started re-discovery thread for aa:bb:cc:dd:ee:ff
+# [INFO] Successfully obtained IPv4 10.0.0.51 for aa:bb:cc:dd:ee:ff
+# [INFO] Device aa:bb:cc:dd:ee:ff successfully configured - IPv4: 10.0.0.51
+
+# 4. Device now works on Network B with new IP!
+#    WAN IP: 10.0.0.51
+```
+
+**This makes the gateway truly plug-and-play for WAN changes!** 🎉
 
 ### File Structure
 

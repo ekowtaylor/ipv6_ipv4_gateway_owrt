@@ -41,6 +41,11 @@ DHCPV4_RETRY_DELAY = 5  # seconds (exponential backoff applied)
 ARP_MONITOR_INTERVAL = 10  # seconds - check for new devices
 DEVICE_MONITOR_INTERVAL = 30  # seconds - update device status
 
+# WAN network monitoring (automatic network change detection)
+ENABLE_WAN_MONITOR = True  # Monitor WAN interface for network changes
+WAN_MONITOR_INTERVAL = 15  # seconds - check for WAN IP changes
+WAN_CHANGE_REDISCOVERY_DELAY = 5  # seconds - wait before re-requesting DHCP for all devices
+
 # Device storage
 DEVICES_FILE = os.path.join(CONFIG_DIR, "devices.json")
 BACKUP_DEVICES_FILE = os.path.join(CONFIG_DIR, "devices.json.bak")
