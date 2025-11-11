@@ -37,6 +37,7 @@ REQUIRED_FILES=(
     "ipv4_ipv6_gateway.py"
     "gateway_config.py"
     "gateway_api_server.py"
+    "diagnose-and-fix.sh"
 )
 
 for file in "${REQUIRED_FILES[@]}"; do
@@ -101,5 +102,14 @@ echo -e "${BLUE}Quick Commands:${NC}"
 echo "  ssh $ROUTER_USER@$ROUTER_IP                    # SSH to router"
 echo "  ssh $ROUTER_USER@$ROUTER_IP gateway-status     # Check status"
 echo "  ssh $ROUTER_USER@$ROUTER_IP gateway-devices    # List devices"
+echo ""
+echo -e "${YELLOW}IMPORTANT - Network Configuration:${NC}"
+echo "The gateway service is installed but network configuration"
+echo "needs to be applied to configure eth1 (192.168.1.1) and eth0 (DHCPv6)."
+echo ""
+echo "Run diagnostic and apply fixes from router:"
+echo "  ssh $ROUTER_USER@$ROUTER_IP"
+echo "  /tmp/diagnose-and-fix.sh               # Run diagnostic"
+echo "  /tmp/diagnose-and-fix.sh --fix-all     # Apply all fixes"
 echo ""
 echo -e "${GREEN}Deployment successful!${NC}"

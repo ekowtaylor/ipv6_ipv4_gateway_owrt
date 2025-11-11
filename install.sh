@@ -173,6 +173,17 @@ cp gateway_api_server.py "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/ipv4_ipv6_gateway.py"
 echo -e "${GREEN}✓ Python files installed to $INSTALL_DIR${NC}\n"
 
+# Step 3.5: Copy diagnostic script (if available)
+echo -e "${YELLOW}Step 3.5: Installing diagnostic script...${NC}"
+if [ -f "diagnose-and-fix.sh" ]; then
+    cp diagnose-and-fix.sh /usr/bin/gateway-diagnose
+    chmod +x /usr/bin/gateway-diagnose
+    echo -e "${GREEN}✓ Diagnostic script installed to /usr/bin/gateway-diagnose${NC}"
+else
+    echo -e "${YELLOW}⚠ diagnose-and-fix.sh not found, skipping${NC}"
+fi
+echo ""
+
 # Step 4: Create systemd service file (only if systemd exists)
 if [ "$INIT_SYSTEM" = "systemd" ]; then
     echo -e "${YELLOW}Step 4: Creating systemd service...${NC}"
@@ -252,8 +263,11 @@ echo -e "${GREEN}✓ Init.d script created${NC}\n"
 echo -e "${YELLOW}Step 6: Backing up network config and creating sample UCI config...${NC}"
 
 LIVE_NET_CFG="/etc/config/network"
+LIVE_DHCP_CFG="/etc/config/dhcp"
 ORIG_NET_BACKUP="$CONFIG_DIR/network.original"
+ORIG_DHCP_BACKUP="$CONFIG_DIR/dhcp.original"
 
+# Backup network config
 if [ -f "$LIVE_NET_CFG" ]; then
     # Only back up once so we don't overwrite the original baseline
     if [ ! -f "$ORIG_NET_BACKUP" ]; then
@@ -266,24 +280,90 @@ else
     echo -e "${YELLOW}⚠ /etc/config/network not found, skipping backup${NC}"
 fi
 
+# Backup DHCP config
+if [ -f "$LIVE_DHCP_CFG" ]; then
+    if [ ! -f "$ORIG_DHCP_BACKUP" ]; then
+        cp "$LIVE_DHCP_CFG" "$ORIG_DHCP_BACKUP"
+        echo -e "${GREEN}✓ Backed up current /etc/config/dhcp to $ORIG_DHCP_BACKUP${NC}"
+    else
+        echo -e "${YELLOW}⚠ DHCP backup already exists at $ORIG_DHCP_BACKUP, not overwriting${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ /etc/config/dhcp not found, skipping backup${NC}"
+fi
+
+# Create network configuration
 cat > "$CONFIG_DIR/network-config.uci" << 'EOF'
 package network
 
-# Sample network configuration for the IPv4↔IPv6 gateway.
-# Review and adapt to your hardware/interface names before importing.
+# IPv4↔IPv6 Gateway Network Configuration
+# eth1 (LAN side) - IPv4 devices
+# eth0 (WAN side) - IPv6 network
 
 config interface 'lan'
-	option ifname 'eth1'
+	option device 'eth1'
 	option proto 'static'
 	option ipaddr '192.168.1.1'
 	option netmask '255.255.255.0'
+	option ip6assign '60'
 
 config interface 'wan'
-	option ifname 'eth0'
+	option device 'eth0'
 	option proto 'dhcpv6'
+	option reqaddress 'try'
+	option reqprefix 'auto'
+
+config device
+	option name 'eth0'
+	option macaddr 'auto'
+
+config device
+	option name 'eth1'
+	option macaddr 'auto'
 EOF
 
-echo -e "${GREEN}✓ Network configuration created at $CONFIG_DIR/network-config.uci${NC}\n"
+echo -e "${GREEN}✓ Network configuration created at $CONFIG_DIR/network-config.uci${NC}"
+
+# Create DHCP configuration
+cat > "$CONFIG_DIR/dhcp-config.uci" << 'EOF'
+package dhcp
+
+# DHCP server configuration for LAN (eth1) interface
+# Provides IPv4 addresses to devices on 192.168.1.0/24 network
+
+config dnsmasq
+	option domainneeded '1'
+	option boguspriv '1'
+	option filterwin2k '0'
+	option localise_queries '1'
+	option rebind_protection '1'
+	option rebind_localhost '1'
+	option local '/lan/'
+	option domain 'lan'
+	option expandhosts '1'
+	option nonegcache '0'
+	option authoritative '1'
+	option readethers '1'
+	option leasefile '/tmp/dhcp.leases'
+	option resolvfile '/tmp/resolv.conf.d/resolv.conf.auto'
+	option nonwildcard '1'
+	option localservice '1'
+
+config dhcp 'lan'
+	option interface 'lan'
+	option start '100'
+	option limit '150'
+	option leasetime '12h'
+	option dhcpv4 'server'
+	option dhcpv6 'disabled'
+	option ra 'disabled'
+
+config dhcp 'wan'
+	option interface 'wan'
+	option ignore '1'
+EOF
+
+echo -e "${GREEN}✓ DHCP configuration created at $CONFIG_DIR/dhcp-config.uci${NC}\n"
 
 # Step 7: Create sample override configuration
 echo -e "${YELLOW}Step 7: Creating sample override configuration...${NC}"
@@ -426,10 +506,33 @@ if [ "$APPLY_NETWORK" = true ]; then
     sleep 5
 
     if command -v uci >/dev/null 2>&1; then
-        echo -e "${BLUE}Importing UCI config...${NC}"
-        uci import < "$CONFIG_DIR/network-config.uci" || echo -e "${RED}⚠ Failed to import UCI config${NC}"
+        echo -e "${BLUE}Backing up current configuration...${NC}"
+        uci export network > /tmp/network.backup.uci.tmp || true
+        uci export dhcp > /tmp/dhcp.backup.uci.tmp || true
+        echo -e "${GREEN}✓ Backup created${NC}"
+
+        echo -e "${BLUE}Importing network configuration...${NC}"
+        uci import network < "$CONFIG_DIR/network-config.uci" || {
+            echo -e "${RED}⚠ Failed to import network config${NC}"
+            echo -e "${YELLOW}Manual import: uci import network < $CONFIG_DIR/network-config.uci${NC}"
+        }
+
+        echo -e "${BLUE}Importing DHCP configuration...${NC}"
+        uci import dhcp < "$CONFIG_DIR/dhcp-config.uci" || {
+            echo -e "${RED}⚠ Failed to import DHCP config${NC}"
+            echo -e "${YELLOW}Manual import: uci import dhcp < $CONFIG_DIR/dhcp-config.uci${NC}"
+        }
+
+        echo -e "${BLUE}Committing changes...${NC}"
+        uci commit || echo -e "${RED}⚠ Failed to commit UCI changes${NC}"
+
         echo -e "${BLUE}Restarting network...${NC}"
         /etc/init.d/network restart || echo -e "${RED}⚠ Failed to restart network${NC}"
+        sleep 3
+
+        echo -e "${BLUE}Restarting DHCP server (dnsmasq)...${NC}"
+        /etc/init.d/dnsmasq restart || echo -e "${RED}⚠ Failed to restart dnsmasq${NC}"
+
         echo -e "${GREEN}✓ Network configuration applied${NC}"
         echo -e "${YELLOW}⚠ If you lost SSH connection, reconnect to 192.168.1.1${NC}"
     else
@@ -532,6 +635,10 @@ else
     echo ""
 fi
 
+echo -e "${YELLOW}Diagnostic Commands:${NC}"
+echo "   gateway-diagnose        # Run comprehensive diagnostic"
+echo "   gateway-diagnose --fix-all   # Apply all recommended fixes"
+echo ""
 echo -e "${YELLOW}Monitoring Commands:${NC}"
 echo "   gateway-status          # Check gateway status"
 echo "   gateway-devices         # List all devices"
