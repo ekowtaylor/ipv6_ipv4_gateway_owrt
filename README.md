@@ -241,9 +241,12 @@ tail -f /var/log/ipv4-ipv6-gateway.log
 
 ## 🌐 Port Forwarding
 
-**NEW: Automatic port forwarding is now enabled by default!**
+**NEW: Automatic port forwarding now supports BOTH IPv4 and IPv6!**
 
-When a device is discovered and successfully configured, the gateway automatically forwards common ports from the gateway's WAN interface to the device's LAN IP.
+When a device is discovered and successfully configured, the gateway automatically forwards common ports:
+
+- **IPv4**: From gateway WAN to device LAN IP (NAT/DNAT)
+- **IPv6**: From gateway WAN to device WAN IPv6 (direct forwarding)
 
 ### Automatic Port Forwarding (Default)
 
@@ -258,20 +261,50 @@ By default, when a device connects and gets configured, these ports are automati
 | 5900 | 5900 | VNC |
 | 3389 | 3389 | RDP |
 
-**This happens automatically - no manual setup needed!** ✨
+**This happens automatically for both IPv4 and IPv6 - no manual setup needed!** ✨
+
+### How It Works
+
+#### **IPv4 Port Forwarding (NAT)**
+```
+Client (IPv4) → Gateway WAN:8080 → NAT → Device LAN:80
+Example: curl http://192.168.8.128:8080  # Gateway WAN IP
+```
+
+#### **IPv6 Port Forwarding (Direct)**
+```
+Client (IPv6) → Gateway WAN:8080 → FORWARD → Device WAN IPv6:80
+Example: curl http://[2001:db8::1234]:80  # Device's actual IPv6
+```
+
+**Key Difference:**
+- **IPv4**: Uses NAT/DNAT (device has private LAN IP)
+- **IPv6**: Direct forwarding (device has routable WAN IPv6)
 
 ### Access from Client
 
-**From WAN network (dual-stack or IPv4 client):**
+**From WAN network (IPv4 client):**
 ```bash
 # Telnet to device (automatic port forward)
-telnet 192.168.8.128 2323  # Gateway WAN IP:2323 → Device:23
+telnet 192.168.8.128 2323  # Gateway WAN IPv4:2323 → Device LAN:23
 
 # HTTP access
-curl http://192.168.8.128:8080  # Gateway WAN IP:8080 → Device:80
+curl http://192.168.8.128:8080  # Gateway WAN IPv4:8080 → Device LAN:80
 
 # SSH access
-ssh -p 2222 user@192.168.8.128  # Gateway WAN IP:2222 → Device:22
+ssh -p 2222 user@192.168.8.128  # Gateway WAN IPv4:2222 → Device LAN:22
+```
+
+**From WAN network (IPv6 client):**
+```bash
+# Get device's IPv6 from gateway
+gateway-devices-direct
+# Shows: "ipv6_address": "2001:db8::1234"
+
+# Access device directly via IPv6
+curl http://[2001:db8::1234]:80  # Direct to device's WAN IPv6:80
+telnet 2001:db8::1234 23         # Direct to device's WAN IPv6:23
+ssh user@2001:db8::1234          # Direct to device's WAN IPv6:22
 ```
 
 **From LAN side (gateway itself):**
@@ -647,7 +680,21 @@ WAN_MONITOR_INTERVAL = 15     # Seconds between checks
 
 # Wait before re-discovery
 WAN_CHANGE_REDISCOVERY_DELAY = 5  # Seconds to wait after network change
+
+# Debouncing (prevents rapid re-triggering)
+WAN_CHANGE_MIN_INTERVAL = 120      # Minimum 2 minutes between change triggers
+WAN_CHANGE_STABLE_TIME = 30        # IPs must be stable 30s before triggering
 ```
+
+**Debouncing prevents infinite loops:**
+
+The WAN monitor includes smart debouncing to prevent rapid flip-flopping between IPs:
+
+1. **Stability Check**: IPs must be stable for 30 seconds before triggering change
+2. **Minimum Interval**: At least 2 minutes must pass between change triggers
+3. **Fluctuation Detection**: Logs fluctuating IPs but doesn't trigger re-discovery
+
+**This prevents loops when DHCP assigns different IPs on each request!** ✅
 
 **Example scenario:**
 ```bash

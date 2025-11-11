@@ -45,6 +45,8 @@ DEVICE_MONITOR_INTERVAL = 30  # seconds - update device status
 ENABLE_WAN_MONITOR = True  # Monitor WAN interface for network changes
 WAN_MONITOR_INTERVAL = 15  # seconds - check for WAN IP changes
 WAN_CHANGE_REDISCOVERY_DELAY = 5  # seconds - wait before re-requesting DHCP for all devices
+WAN_CHANGE_MIN_INTERVAL = 120  # seconds - minimum time between WAN change triggers (debounce)
+WAN_CHANGE_STABLE_TIME = 30  # seconds - IP must be stable this long before considering it changed
 
 # Device storage
 DEVICES_FILE = os.path.join(CONFIG_DIR, "devices.json")

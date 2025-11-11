@@ -785,7 +785,7 @@ class FirewallManager:
 
 
 class WANMonitor:
-    """Monitors WAN interface for network changes"""
+    """Monitors WAN interface for network changes with debouncing"""
 
     def __init__(self, interface: str):
         self.interface = interface
@@ -793,6 +793,10 @@ class WANMonitor:
         self.iface = NetworkInterface(interface)
         self.last_ipv4: Optional[List[str]] = None
         self.last_ipv6: Optional[List[str]] = None
+        self.last_change_time: Optional[float] = None  # Track last change time for debouncing
+        self.stable_ipv4: Optional[List[str]] = None  # IPs that have been stable
+        self.stable_ipv6: Optional[List[str]] = None
+        self.stable_since: Optional[float] = None  # When IPs became stable
 
     def get_current_addresses(self) -> tuple:
         """Get current IPv4 and IPv6 addresses on WAN interface"""
@@ -802,42 +806,98 @@ class WANMonitor:
 
     def check_for_changes(self) -> bool:
         """
-        Check if WAN network has changed.
-        Returns True if network changed, False otherwise.
+        Check if WAN network has changed with debouncing.
+
+        Debouncing logic:
+        1. IPs must be stable for WAN_CHANGE_STABLE_TIME before triggering change
+        2. Minimum WAN_CHANGE_MIN_INTERVAL between change triggers
+        3. Prevents rapid flip-flopping between two IPs
+
+        Returns True if network changed (and passed debounce), False otherwise.
         """
         current_ipv4, current_ipv6 = self.get_current_addresses()
+        current_time = time.time()
 
         # First time - just initialize
         if self.last_ipv4 is None and self.last_ipv6 is None:
             self.last_ipv4 = current_ipv4
             self.last_ipv6 = current_ipv6
+            self.stable_ipv4 = current_ipv4
+            self.stable_ipv6 = current_ipv6
+            self.stable_since = current_time
             self.logger.info(
                 f"WAN monitor initialized - IPv4: {current_ipv4}, IPv6: {current_ipv6}"
             )
             return False
 
-        # Check for changes
+        # Check if IPs changed from last check
         ipv4_changed = set(current_ipv4) != set(self.last_ipv4 or [])
         ipv6_changed = set(current_ipv6) != set(self.last_ipv6 or [])
 
-        if ipv4_changed or ipv6_changed:
-            self.logger.warning("WAN network change detected!")
-            if ipv4_changed:
-                self.logger.warning(
-                    f"  IPv4 changed: {self.last_ipv4} → {current_ipv4}"
+        # Update last seen IPs
+        self.last_ipv4 = current_ipv4
+        self.last_ipv6 = current_ipv6
+
+        # If IPs changed from stable state, reset stability timer
+        if (set(current_ipv4) != set(self.stable_ipv4 or []) or
+            set(current_ipv6) != set(self.stable_ipv6 or [])):
+
+            # IPs are fluctuating
+            if self.stable_since is None or (current_time - self.stable_since) > cfg.WAN_CHANGE_STABLE_TIME:
+                # Reset stability timer
+                self.stable_since = current_time
+                self.logger.debug(
+                    f"WAN IPs fluctuating - resetting stability timer "
+                    f"(IPv4: {current_ipv4}, IPv6: {current_ipv6})"
                 )
-            if ipv6_changed:
+            return False
+
+        # IPs are same as stable IPs - check if they've been stable long enough
+        time_since_stable = current_time - (self.stable_since or current_time)
+
+        if time_since_stable < cfg.WAN_CHANGE_STABLE_TIME:
+            # Not stable long enough yet
+            self.logger.debug(
+                f"WAN IPs stabilizing... ({time_since_stable:.0f}s / {cfg.WAN_CHANGE_STABLE_TIME}s)"
+            )
+            return False
+
+        # IPs have been stable - check if they're different from what we reported last time
+        stable_ipv4_changed = set(current_ipv4) != set(self.stable_ipv4 or [])
+        stable_ipv6_changed = set(current_ipv6) != set(self.stable_ipv6 or [])
+
+        if not (stable_ipv4_changed or stable_ipv6_changed):
+            # No actual change from stable state
+            return False
+
+        # Check debounce timer (minimum time between triggers)
+        if self.last_change_time is not None:
+            time_since_last_change = current_time - self.last_change_time
+            if time_since_last_change < cfg.WAN_CHANGE_MIN_INTERVAL:
                 self.logger.warning(
-                    f"  IPv6 changed: {self.last_ipv6} → {current_ipv6}"
+                    f"WAN change detected but debounce active "
+                    f"({time_since_last_change:.0f}s / {cfg.WAN_CHANGE_MIN_INTERVAL}s) - ignoring"
                 )
+                return False
 
-            # Update last known addresses
-            self.last_ipv4 = current_ipv4
-            self.last_ipv6 = current_ipv6
+        # WAN has genuinely changed and passed all debounce checks!
+        self.logger.warning("WAN network change detected (debounce passed)!")
+        if stable_ipv4_changed:
+            self.logger.warning(
+                f"  IPv4 changed: {self.stable_ipv4} → {current_ipv4}"
+            )
+        if stable_ipv6_changed:
+            self.logger.warning(
+                f"  IPv6 changed: {self.stable_ipv6} → {current_ipv6}"
+            )
 
-            return True
+        # Update stable state and change time
+        self.stable_ipv4 = current_ipv4
+        self.stable_ipv6 = current_ipv6
+        self.last_change_time = current_time
+        self.stable_since = current_time
 
-        return False
+        return True
 
 
 class GatewayService:
@@ -1219,8 +1279,14 @@ class GatewayService:
                     )
 
                     # Setup automatic port forwarding if enabled
-                    if cfg.ENABLE_AUTO_PORT_FORWARDING and device.ipv4_address:
-                        self._setup_auto_port_forwarding(device.ipv4_address, mac)
+                    if cfg.ENABLE_AUTO_PORT_FORWARDING:
+                        # IPv4 port forwarding (if device has LAN IPv4)
+                        if device.ipv4_address:
+                            self._setup_auto_port_forwarding_ipv4(device.ipv4_address, mac)
+
+                        # IPv6 port forwarding (if device has WAN IPv6)
+                        if device.ipv6_address:
+                            self._setup_auto_port_forwarding_ipv6(device.ipv6_address, mac)
                 else:
                     device.status = "failed"
                     self.logger.warning(
@@ -1235,12 +1301,12 @@ class GatewayService:
                 if mac in self.devices:
                     self.devices[mac].status = "error"
 
-    def _setup_auto_port_forwarding(self, device_ip: str, mac: str) -> None:
+    def _setup_auto_port_forwarding_ipv4(self, device_ip: str, mac: str) -> None:
         """
-        Automatically setup port forwarding for a device.
+        Setup IPv4 port forwarding using iptables.
         Forwards common ports from gateway WAN to device LAN IP.
         """
-        self.logger.info(f"Setting up automatic port forwarding for {device_ip} (MAC: {mac})")
+        self.logger.info(f"Setting up IPv4 port forwarding for {device_ip} (MAC: {mac})")
 
         wan_interface = cfg.ETH0_INTERFACE
         lan_interface = cfg.ETH1_INTERFACE
@@ -1308,20 +1374,101 @@ class GatewayService:
                     subprocess.run(local_cmd, check=True, capture_output=True)
 
                     self.logger.info(
-                        f"Port forward: gateway:{gateway_port} → {device_ip}:{device_port}"
+                        f"IPv4 port forward: gateway:{gateway_port} → {device_ip}:{device_port}"
                     )
                 else:
                     self.logger.debug(
-                        f"Port forward already exists: gateway:{gateway_port} → {device_ip}:{device_port}"
+                        f"IPv4 port forward already exists: gateway:{gateway_port} → {device_ip}:{device_port}"
                     )
 
             except subprocess.CalledProcessError as e:
                 self.logger.warning(
-                    f"Failed to setup port forward {gateway_port}→{device_port}: {e}"
+                    f"Failed to setup IPv4 port forward {gateway_port}→{device_port}: {e}"
                 )
             except Exception as e:
                 self.logger.error(
-                    f"Error setting up port forward {gateway_port}→{device_port}: {e}"
+                    f"Error setting up IPv4 port forward {gateway_port}→{device_port}: {e}"
+                )
+
+    def _setup_auto_port_forwarding_ipv6(self, device_ipv6: str, mac: str) -> None:
+        """
+        Setup IPv6 port forwarding using ip6tables.
+        Forwards common ports from gateway's WAN IPv6 to device's WAN IPv6.
+
+        Note: For IPv6, we're forwarding to the device's WAN IPv6 address
+        (not LAN IPv4), since the device already has a routable IPv6 address.
+        """
+        self.logger.info(f"Setting up IPv6 port forwarding for {device_ipv6} (MAC: {mac})")
+
+        wan_interface = cfg.ETH0_INTERFACE
+
+        for gateway_port, device_port in cfg.AUTO_PORT_FORWARDS.items():
+            try:
+                # Check if rule already exists
+                check_cmd = [
+                    cfg.CMD_IP6TABLES,
+                    "-C",  # Check
+                    "FORWARD",
+                    "-i", wan_interface,
+                    "-p", "tcp",
+                    "-d", device_ipv6,
+                    "--dport", str(device_port),
+                    "-j", "ACCEPT"
+                ]
+
+                check_result = subprocess.run(check_cmd, capture_output=True)
+
+                if check_result.returncode != 0:
+                    # Rule doesn't exist, add it
+                    # FORWARD rule: Allow traffic to device's IPv6
+                    forward_cmd = [
+                        cfg.CMD_IP6TABLES,
+                        "-A", "FORWARD",
+                        "-i", wan_interface,
+                        "-p", "tcp",
+                        "-d", device_ipv6,
+                        "--dport", str(device_port),
+                        "-j", "ACCEPT"
+                    ]
+                    subprocess.run(forward_cmd, check=True, capture_output=True)
+
+                    # Return traffic
+                    return_cmd = [
+                        cfg.CMD_IP6TABLES,
+                        "-A", "FORWARD",
+                        "-p", "tcp",
+                        "-s", device_ipv6,
+                        "--sport", str(device_port),
+                        "-j", "ACCEPT"
+                    ]
+                    subprocess.run(return_cmd, check=True, capture_output=True)
+
+                    # INPUT rule: Allow traffic destined for gateway itself
+                    input_cmd = [
+                        cfg.CMD_IP6TABLES,
+                        "-A", "INPUT",
+                        "-i", wan_interface,
+                        "-p", "tcp",
+                        "--dport", str(gateway_port),
+                        "-j", "ACCEPT"
+                    ]
+                    subprocess.run(input_cmd, check=True, capture_output=True)
+
+                    self.logger.info(
+                        f"IPv6 port forward: [gateway]:{gateway_port} → [{device_ipv6}]:{device_port}"
+                    )
+                else:
+                    self.logger.debug(
+                        f"IPv6 port forward already exists: [gateway]:{gateway_port} → [{device_ipv6}]:{device_port}"
+                    )
+
+            except subprocess.CalledProcessError as e:
+                self.logger.warning(
+                    f"Failed to setup IPv6 port forward {gateway_port}→{device_port}: {e}"
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Error setting up IPv6 port forward {gateway_port}→{device_port}: {e}"
                 )
 
     def _monitoring_loop(self) -> None:
