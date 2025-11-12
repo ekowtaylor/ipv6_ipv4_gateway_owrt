@@ -248,8 +248,8 @@ class HAProxyManager:
                 lines.append(f"    # Increased timeouts for slow devices")
                 lines.append(f"    timeout connect 10s")
                 lines.append(f"    timeout server 300s")
-                lines.append(f"    # Source from LAN interface for proper routing")
-                lines.append(f"    source 192.168.1.1")
+                lines.append(f"    # NO source binding - kernel auto-selects for proper routing")
+                lines.append(f"    # (Binding to 192.168.1.1 causes cross-interface routing conflicts)")
                 lines.append(f"    server device_{safe_mac} {device_ip}:{device_port}")
                 lines.append("")
 

@@ -1106,9 +1106,16 @@ class SocatProxyManager:
             # The "rawer" and "ignoreeof" options can cause issues with IPv6
             # Use standard TCP options that are universally compatible
 
-            # CRITICAL: Bind outgoing connections to gateway's LAN IP (192.168.1.1)
-            # This ensures the device receives connections from a known source and can route responses back
-            gateway_lan_ip = "192.168.1.1"  # Gateway's eth1 IP
+            # CRITICAL FIX: DO NOT bind source IP on outgoing connections!
+            # Why: Binding to gateway's LAN IP (192.168.1.1) causes routing conflicts:
+            #   - IPv6 connection comes in on eth0
+            #   - IPv4 connection goes out on eth1 with forced source IP
+            #   - Device's response to 192.168.1.1 creates cross-interface routing confusion
+            #   - Kernel can't determine correct return path → connection fails with RST
+            # Solution: Let kernel auto-select source IP based on routing table (it's smarter!)
+            #   - Kernel picks correct interface (eth1) and appropriate source IP
+            #   - Responses route correctly back to socat
+            #   - Connection succeeds! ✅
 
             # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
             # CRITICAL FIX: socat IPv6 bind syntax - NO brackets in bind parameter!
@@ -1118,7 +1125,7 @@ class SocatProxyManager:
                 cfg.CMD_SOCAT,
                 *verbose_flags,
                 f"TCP6-LISTEN:{gateway_port},bind={device_ipv6},fork,reuseaddr",
-                f"TCP4:{device_ipv4}:{device_port},bind={gateway_lan_ip}"
+                f"TCP4:{device_ipv4}:{device_port}"  # No source binding - let kernel decide!
             ]
 
             # Start socat in background with logging

@@ -109,9 +109,9 @@ else
     echo ""
     echo -e "${CYAN}  FIX: Start socat manually${NC}"
     echo -e "    ${BLUE}# For HTTP (port 80)${NC}"
-    echo -e "    ${BLUE}socat -d -d TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:80,bind=192.168.1.1 &${NC}"
+    echo -e "    ${BLUE}socat -d -d TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:80 &${NC}"
     echo -e "    ${BLUE}# For Telnet (port 23)${NC}"
-    echo -e "    ${BLUE}socat -d -d TCP6-LISTEN:23,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:23,bind=192.168.1.1 &${NC}"
+    echo -e "    ${BLUE}socat -d -d TCP6-LISTEN:23,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:23 &${NC}"
     ISSUES_FOUND=$((ISSUES_FOUND + 1))
 fi
 echo ""
@@ -305,9 +305,9 @@ else
     fi
 
     if [ -z "$SOCAT_PROCS" ]; then
-        echo -e "${BLUE}# Start socat proxies${NC}"
-        echo "socat -d -d TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:80,bind=192.168.1.1 &"
-        echo "socat -d -d TCP6-LISTEN:23,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:23,bind=192.168.1.1 &"
+        echo -e "${BLUE}# Start socat proxies (no source binding)${NC}"
+        echo "socat -d -d TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:80 &"
+        echo "socat -d -d TCP6-LISTEN:23,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:23 &"
         echo ""
     fi
 
@@ -321,15 +321,15 @@ else
     echo -e "${CYAN}Copy-paste ready fix:${NC}"
     echo -e "${YELLOW}────────────────────────────────────────${NC}"
     cat << EOF
-# Complete fix script
+# Complete fix script (NO source binding - kernel chooses best route!)
 ip -6 addr add $DEVICE_IPV6/64 dev eth0 2>/dev/null || true
 ip -6 neigh add proxy $DEVICE_IPV6 dev eth0 2>/dev/null || true
 ip6tables -P INPUT ACCEPT
 ip6tables -P FORWARD ACCEPT
 killall socat 2>/dev/null || true
 sleep 2
-socat -d -d TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:80,bind=192.168.1.1 &
-socat -d -d TCP6-LISTEN:23,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:23,bind=192.168.1.1 &
+socat -d -d TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:80 &
+socat -d -d TCP6-LISTEN:23,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:23 &
 sleep 2
 ps | grep socat | grep -v grep
 EOF

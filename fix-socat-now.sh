@@ -43,19 +43,20 @@ echo "[4/6] Configuring IPv6 firewall..."
 ip6tables -P INPUT ACCEPT 2>/dev/null || true
 ip6tables -P FORWARD ACCEPT 2>/dev/null || true
 
-# Step 5: Start socat with CORRECT syntax (NO BRACKETS!)
+# Step 5: Start socat with CORRECT syntax (NO BRACKETS, NO SOURCE BINDING!)
 echo "[5/6] Starting socat proxies with FIXED syntax..."
+echo "  Note: No source IP binding - kernel auto-selects for proper routing"
 
 # HTTP proxy (port 80)
 socat -d -d \
   TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr \
-  TCP4:$DEVICE_IPV4:80,bind=192.168.1.1 \
+  TCP4:$DEVICE_IPV4:80 \
   >> /var/log/ipv4-ipv6-gateway.log 2>&1 &
 
 # Telnet proxy (port 23)
 socat -d -d \
   TCP6-LISTEN:23,bind=$DEVICE_IPV6,fork,reuseaddr \
-  TCP4:$DEVICE_IPV4:23,bind=192.168.1.1 \
+  TCP4:$DEVICE_IPV4:23 \
   >> /var/log/ipv4-ipv6-gateway.log 2>&1 &
 
 sleep 2
