@@ -120,9 +120,9 @@ if command -v opkg >/dev/null 2>&1; then
     opkg install iptables ip6tables 2>/dev/null || echo -e "${YELLOW}⚠ iptables installation failed or already installed${NC}"
 
     # IPv6→IPv4 proxy options (required for IPv6 clients to access IPv4-only devices)
-    echo -e "${BLUE}Installing IPv6→IPv4 proxy options...${NC}"
+    echo -e "${BLUE}Installing IPv6→IPv4 proxy (socat is default, HAProxy is optional)...${NC}"
     opkg install socat 2>/dev/null || echo -e "${YELLOW}⚠ socat installation failed or already installed${NC}"
-    opkg install haproxy 2>/dev/null || echo -e "${YELLOW}⚠ haproxy installation failed or already installed${NC}"
+    opkg install haproxy 2>/dev/null || echo -e "${YELLOW}⚠ haproxy installation failed or already installed (optional)${NC}"
 
     # Optional but recommended: legacy tools for compatibility
     echo -e "${BLUE}Installing optional compatibility tools...${NC}"

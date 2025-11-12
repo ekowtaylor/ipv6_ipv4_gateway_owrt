@@ -99,9 +99,9 @@ AUTO_PORT_FORWARDS = {
 ENABLE_IPV6_TO_IPV4_PROXY = True   # Enable IPv6→IPv4 proxying
 
 # Proxy backend selection: "socat" or "haproxy"
-# - socat: Lightweight, simple TCP proxy (good for most cases)
+# - socat: Lightweight, simple TCP proxy with excellent error messages (recommended for debugging)
 # - haproxy: Production-grade proxy with better protocol handling and logging
-IPV6_PROXY_BACKEND = "haproxy"     # Options: "socat" or "haproxy" (default: haproxy)
+IPV6_PROXY_BACKEND = "socat"       # Options: "socat" or "haproxy" (default: socat)
 
 # socat-specific settings
 SOCAT_PROXY_BIND_IPV6 = "::"       # Bind to all IPv6 addresses (:: = any IPv6)

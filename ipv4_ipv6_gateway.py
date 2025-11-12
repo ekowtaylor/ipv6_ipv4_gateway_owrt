@@ -156,6 +156,24 @@ class NetworkInterface:
             self.logger.error(f"Failed to get IPv6 addresses: {e}")
             return []
 
+    def add_ipv6_address(self, ipv6: str, prefix_len: int = 64) -> bool:
+        """Add an IPv6 address to interface"""
+        try:
+            subprocess.run(
+                [cfg.CMD_IP, "-6", "addr", "add", f"{ipv6}/{prefix_len}", "dev", self.interface_name],
+                check=True,
+                capture_output=True,
+            )
+            self.logger.info(f"Added IPv6 {ipv6}/{prefix_len} to {self.interface_name}")
+            return True
+        except subprocess.CalledProcessError as e:
+            # Check if address already exists (not an error)
+            if "RTNETLINK answers: File exists" in str(e.stderr):
+                self.logger.debug(f"IPv6 {ipv6} already exists on {self.interface_name}")
+                return True
+            self.logger.error(f"Failed to add IPv6 address: {e}")
+            return False
+
     def flush_ipv6_addresses(self) -> bool:
         """Remove all IPv6 addresses from interface"""
         try:
@@ -356,6 +374,7 @@ class DHCPv6Manager:
         self.logger.info(f"Requesting IPv6 for MAC: {mac} (SLAAC + DHCPv6)")
 
         original_mac = self.iface.get_mac_address()
+        obtained_ipv6 = None  # Track obtained IPv6 for re-adding after MAC restoration
 
         try:
             self.iface.flush_ipv6_addresses()
@@ -386,6 +405,7 @@ class DHCPv6Manager:
                 addresses = self.iface.get_ipv6_addresses()
                 if addresses:
                     ipv6 = addresses[0]
+                    obtained_ipv6 = ipv6  # Store for re-adding later
                     self.logger.info(
                         f"Successfully obtained IPv6 {ipv6} via SLAAC for MAC {mac} "
                         f"(attempt {attempt_num})"
@@ -406,6 +426,7 @@ class DHCPv6Manager:
 
                     if addresses:
                         ipv6 = addresses[0]
+                        obtained_ipv6 = ipv6  # Store for re-adding later
                         self.logger.info(
                             f"Successfully obtained IPv6 {ipv6} via DHCPv6 for MAC {mac} "
                             f"(attempt {attempt_num})"
@@ -437,8 +458,33 @@ class DHCPv6Manager:
             self.logger.error(f"Exception during IPv6 request: {e}")
             return None
         finally:
-            if original_mac:
-                self.iface.set_mac_address(original_mac)
+            # CRITICAL FOR MAC-AUTHENTICATED NETWORKS:
+            # DO NOT restore original MAC! We must keep the device's MAC address
+            # because the network only allows authenticated MACs (802.1X or MAC filtering).
+            # The gateway's original MAC is not authorized, so traffic would be blocked.
+            if original_mac and mac != original_mac:
+                self.logger.warning(
+                    f"NOT restoring original MAC {original_mac} - keeping device MAC {mac} "
+                    f"for network authentication (802.1X/MAC filtering)"
+                )
+
+            # CRITICAL FIX: Re-add IPv6 to eth0 after DHCPv6/SLAAC
+            # The kernel may have removed the IPv6 during the DHCPv6 process
+            # We must manually ensure the IPv6 is configured for socat/HAProxy to bind to it
+            if obtained_ipv6:
+                time.sleep(1)  # Let network settle
+
+                self.logger.info(f"Ensuring IPv6 {obtained_ipv6} is configured on {self.interface}...")
+                if self.iface.add_ipv6_address(obtained_ipv6, 64):
+                    self.logger.info(f"✓ IPv6 {obtained_ipv6} configured on {self.interface}")
+
+                    # Enable Proxy NDP for this IPv6
+                    if self._enable_proxy_ndp(obtained_ipv6):
+                        self.logger.info(f"✓ Enabled Proxy NDP for {obtained_ipv6}")
+                    else:
+                        self.logger.warning(f"⚠ Failed to enable Proxy NDP for {obtained_ipv6}")
+                else:
+                    self.logger.error(f"✗ Failed to configure IPv6 {obtained_ipv6} on {self.interface}")
 
     def _enable_ipv6_on_interface(self) -> bool:
         """
@@ -467,6 +513,36 @@ class DHCPv6Manager:
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to enable IPv6 on {self.interface}: {e}")
             return False
+
+    def _enable_proxy_ndp(self, ipv6: str) -> bool:
+        """
+        Enable IPv6 Proxy NDP for the given address.
+
+        This tells the kernel to respond to Neighbor Discovery requests
+        for this IPv6 address, even though it's not the "primary" address.
+
+        Args:
+            ipv6: IPv6 address to enable proxy NDP for
+
+        Returns:
+            True if successful
+        """
+        try:
+            subprocess.run(
+                [cfg.CMD_IP, "-6", "neigh", "add", "proxy", ipv6, "dev", self.interface],
+                check=True,
+                capture_output=True
+            )
+            self.logger.debug(f"Enabled Proxy NDP for {ipv6} on {self.interface}")
+            return True
+        except subprocess.CalledProcessError as e:
+            # Check if it already exists (exit code 2)
+            if e.returncode == 2:
+                self.logger.debug(f"Proxy NDP already enabled for {ipv6}")
+                return True
+            else:
+                self.logger.error(f"Failed to enable Proxy NDP for {ipv6}: {e}")
+                return False
 
     def _request_dhcpv6(self) -> bool:
         """Execute DHCPv6 request using odhcp6c (stateful - requests address)"""

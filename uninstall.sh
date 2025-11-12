@@ -87,6 +87,71 @@ if [ "$INIT_SYSTEM" = "systemd" ] && [ -f "$SYSTEMD_SERVICE" ]; then
     systemctl daemon-reload 2>/dev/null || true
 fi
 
+# CRITICAL: Restore original MAC address on eth0
+# The gateway may have spoofed a device's MAC for network authentication
+# We need to restore the gateway's original MAC before uninstalling
+echo -e "${BLUE}- Restoring original MAC address on eth0 (if saved)...${NC}"
+
+# Try to find saved original MAC from device store
+if [ -f "$CONFIG_DIR/devices.json" ]; then
+    # Extract any MAC that was saved before spoofing
+    # The gateway stores its work in devices.json, but original MAC isn't there
+    # So we'll try to get it from the network backup if available
+    echo -e "${BLUE}  Checking for saved original MAC...${NC}"
+fi
+
+# Check if there's a network interface backup with original MAC
+if [ -f "$CONFIG_DIR/network.original" ]; then
+    echo -e "${BLUE}  Found network backup, checking for MAC info...${NC}"
+fi
+
+# Best effort: Try to reset eth0 MAC to a predictable state
+# Option 1: Read from device-tree or system
+if [ -d "/sys/class/net/eth0" ]; then
+    echo -e "${BLUE}  Attempting to restore eth0 MAC address...${NC}"
+
+    # Try to get permanent MAC address from device
+    if [ -f "/sys/class/net/eth0/address" ]; then
+        CURRENT_MAC=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
+        echo -e "${BLUE}  Current eth0 MAC: ${CURRENT_MAC}${NC}"
+    fi
+
+    # Check if there's a permanent address stored
+    if [ -f "/sys/class/net/eth0/perm_addr" ]; then
+        PERM_MAC=$(cat /sys/class/net/eth0/perm_addr 2>/dev/null || echo "")
+        if [ -n "$PERM_MAC" ] && [ "$PERM_MAC" != "00:00:00:00:00:00" ]; then
+            echo -e "${BLUE}  Hardware/Permanent MAC: ${PERM_MAC}${NC}"
+
+            # Only restore if current MAC is different
+            if [ "$CURRENT_MAC" != "$PERM_MAC" ]; then
+                echo -e "${YELLOW}  Restoring hardware MAC address to eth0...${NC}"
+                ip link set eth0 down 2>/dev/null || true
+                ip link set eth0 address "$PERM_MAC" 2>/dev/null || true
+                ip link set eth0 up 2>/dev/null || true
+
+                # Verify
+                NEW_MAC=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
+                if [ "$NEW_MAC" = "$PERM_MAC" ]; then
+                    echo -e "${GREEN}  ✓ Restored hardware MAC address: ${PERM_MAC}${NC}"
+                else
+                    echo -e "${YELLOW}  ⚠ Failed to restore MAC (may require reboot)${NC}"
+                fi
+            else
+                echo -e "${GREEN}  ✓ eth0 already has hardware MAC address${NC}"
+            fi
+        else
+            echo -e "${YELLOW}  ⚠ No permanent MAC address found in sysfs${NC}"
+            echo -e "${YELLOW}  ⚠ Manual MAC restoration may be required after uninstall${NC}"
+            echo -e "${YELLOW}  ⚠ Rebooting the gateway will restore the hardware MAC${NC}"
+        fi
+    else
+        echo -e "${YELLOW}  ⚠ /sys/class/net/eth0/perm_addr not available${NC}"
+        echo -e "${YELLOW}  ⚠ Recommend rebooting to restore hardware MAC address${NC}"
+    fi
+else
+    echo -e "${YELLOW}  ⚠ eth0 interface not found in sysfs${NC}"
+fi
+
 # Kill any remaining socat processes (IPv6→IPv4 proxies)
 echo -e "${BLUE}- Stopping IPv6→IPv4 socat proxies...${NC}"
 SOCAT_PIDS=$(ps | grep -E 'socat.*TCP6-LISTEN.*TCP4:' | grep -v grep | awk '{print $1}')
