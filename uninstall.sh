@@ -182,6 +182,122 @@ if [ -f "/etc/haproxy/haproxy.cfg" ]; then
     echo -e "${GREEN}✓ Removed HAProxy configuration${NC}"
 fi
 
+# CRITICAL: Clean up iptables/ip6tables rules
+echo -e "${BLUE}- Cleaning up firewall rules (iptables/ip6tables)...${NC}"
+
+# Flush NAT rules (PREROUTING, OUTPUT chains)
+if command -v iptables >/dev/null 2>&1; then
+    echo -e "${BLUE}  Flushing iptables NAT rules...${NC}"
+    iptables -t nat -F PREROUTING 2>/dev/null || true
+    iptables -t nat -F OUTPUT 2>/dev/null || true
+    iptables -t nat -F POSTROUTING 2>/dev/null || true
+
+    # Flush FORWARD chain (port forwarding rules)
+    iptables -F FORWARD 2>/dev/null || true
+
+    echo -e "${GREEN}  ✓ Flushed iptables rules${NC}"
+fi
+
+if command -v ip6tables >/dev/null 2>&1; then
+    echo -e "${BLUE}  Flushing ip6tables rules...${NC}"
+    ip6tables -F INPUT 2>/dev/null || true
+    ip6tables -F FORWARD 2>/dev/null || true
+    ip6tables -F OUTPUT 2>/dev/null || true
+
+    echo -e "${GREEN}  ✓ Flushed ip6tables rules${NC}"
+fi
+
+# CRITICAL: Flush connection tracking table
+echo -e "${BLUE}- Flushing connection tracking table...${NC}"
+if [ -f /proc/net/nf_conntrack ]; then
+    # Flush conntrack entries
+    if command -v conntrack >/dev/null 2>&1; then
+        conntrack -F 2>/dev/null || true
+        echo -e "${GREEN}  ✓ Flushed conntrack table${NC}"
+    else
+        # Alternative: write to sysctl
+        echo 1 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
+        sleep 1
+        echo 262144 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
+        echo -e "${GREEN}  ✓ Reset conntrack table${NC}"
+    fi
+else
+    echo -e "${BLUE}  (Connection tracking not active)${NC}"
+fi
+
+# CRITICAL: Clean up IPv6 addresses on eth0
+echo -e "${BLUE}- Cleaning up IPv6 addresses on eth0...${NC}"
+if [ -d "/sys/class/net/eth0" ]; then
+    # Flush all IPv6 addresses (except link-local)
+    if command -v ip >/dev/null 2>&1; then
+        IPV6_ADDRS=$(ip -6 addr show eth0 | grep 'inet6' | grep -v 'fe80::' | awk '{print $2}')
+        if [ -n "$IPV6_ADDRS" ]; then
+            echo "$IPV6_ADDRS" | while read addr; do
+                ip -6 addr del "$addr" dev eth0 2>/dev/null || true
+                echo -e "${BLUE}    Removed: $addr${NC}"
+            done
+            echo -e "${GREEN}  ✓ Cleaned up IPv6 addresses${NC}"
+        else
+            echo -e "${BLUE}  (No IPv6 addresses to clean)${NC}"
+        fi
+    fi
+else
+    echo -e "${YELLOW}  ⚠ eth0 interface not found${NC}"
+fi
+
+# CRITICAL: Clean up IPv4 addresses on eth0
+echo -e "${BLUE}- Cleaning up IPv4 addresses on eth0...${NC}"
+if [ -d "/sys/class/net/eth0" ]; then
+    if command -v ip >/dev/null 2>&1; then
+        IPV4_ADDRS=$(ip -4 addr show eth0 | grep 'inet' | grep -v '127.0.0.1' | awk '{print $2}')
+        if [ -n "$IPV4_ADDRS" ]; then
+            echo "$IPV4_ADDRS" | while read addr; do
+                ip -4 addr del "$addr" dev eth0 2>/dev/null || true
+                echo -e "${BLUE}    Removed: $addr${NC}"
+            done
+            echo -e "${GREEN}  ✓ Cleaned up IPv4 addresses${NC}"
+        else
+            echo -e "${BLUE}  (No IPv4 addresses to clean)${NC}"
+        fi
+    fi
+fi
+
+# CRITICAL: Clean up IPv6 proxy NDP entries
+echo -e "${BLUE}- Cleaning up IPv6 Proxy NDP entries...${NC}"
+if command -v ip >/dev/null 2>&1; then
+    NDP_ENTRIES=$(ip -6 neigh show proxy 2>/dev/null | grep -v 'fe80::' | awk '{print $1}')
+    if [ -n "$NDP_ENTRIES" ]; then
+        echo "$NDP_ENTRIES" | while read ipv6; do
+            ip -6 neigh del proxy "$ipv6" dev eth0 2>/dev/null || true
+            echo -e "${BLUE}    Removed NDP proxy: $ipv6${NC}"
+        done
+        echo -e "${GREEN}  ✓ Cleaned up Proxy NDP entries${NC}"
+    else
+        echo -e "${BLUE}  (No Proxy NDP entries to clean)${NC}"
+    fi
+fi
+
+# CRITICAL: Restore IPv6 sysctl settings on eth0
+echo -e "${BLUE}- Restoring IPv6 sysctl settings on eth0...${NC}"
+if command -v sysctl >/dev/null 2>&1; then
+    # Restore default IPv6 settings
+    sysctl -w net.ipv6.conf.eth0.accept_ra=1 2>/dev/null || true
+    sysctl -w net.ipv6.conf.eth0.autoconf=1 2>/dev/null || true
+    sysctl -w net.ipv6.conf.eth0.disable_ipv6=0 2>/dev/null || true
+
+    # Restore forwarding to safe default (0 = disabled)
+    sysctl -w net.ipv4.ip_forward=0 2>/dev/null || true
+    sysctl -w net.ipv6.conf.all.forwarding=0 2>/dev/null || true
+
+    echo -e "${GREEN}  ✓ Restored IPv6 sysctl settings${NC}"
+fi
+
+# CRITICAL: Restart network to apply clean state
+echo -e "${BLUE}- Restarting network to apply clean state...${NC}"
+/etc/init.d/network restart 2>/dev/null || true
+sleep 3
+echo -e "${GREEN}  ✓ Network restarted${NC}"
+
 # Restore IPv6 listening on LuCI and SSH (if backups exist)
 echo -e "${BLUE}- Restoring LuCI and SSH IPv6 listening (if backups exist)...${NC}"
 
