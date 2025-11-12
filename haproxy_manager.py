@@ -225,6 +225,11 @@ class HAProxyManager:
                 lines.append(f"backend {backend_name}")
                 lines.append(f"    # Target device: {device_ip}:{device_port} (MAC: {mac})")
                 lines.append(f"    # Health checks disabled - allow connections even if device is slow/down")
+                lines.append(f"    # Increased timeouts for slow devices")
+                lines.append(f"    timeout connect 10s")
+                lines.append(f"    timeout server 300s")
+                lines.append(f"    # Source from LAN interface for proper routing")
+                lines.append(f"    source 192.168.1.1")
                 lines.append(f"    server device_{safe_mac} {device_ip}:{device_port}")
                 lines.append("")
 
