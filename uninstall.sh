@@ -328,6 +328,8 @@ rm -f  /usr/bin/gateway-devices-direct  || true
 rm -f  /usr/bin/gateway-diagnose     || true
 rm -f  /usr/bin/gateway-port-forward || true
 rm -f  /usr/bin/monitor-connections  || true
+rm -f  /usr/bin/capture-traffic      || true
+rm -f  /usr/bin/debug-connections    || true
 
 echo -e "${GREEN}✓ Service, configs, logs, and helper scripts removed${NC}\n"
 

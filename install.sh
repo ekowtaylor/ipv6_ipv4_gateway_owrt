@@ -137,6 +137,7 @@ if command -v opkg >/dev/null 2>&1; then
     opkg install procps-ng procps-ng-sysctl 2>/dev/null || echo -e "${YELLOW}⚠ procps-ng (provides 'sysctl') not available${NC}"
     opkg install nano 2>/dev/null || echo -e "${YELLOW}⚠ nano text editor not available${NC}"
     opkg install bash 2>/dev/null || echo -e "${YELLOW}⚠ bash shell not available${NC}"
+    opkg install tcpdump 2>/dev/null || echo -e "${YELLOW}⚠ tcpdump not available (useful for debugging)${NC}"
 
     # Configure bash with history support
     if command -v bash >/dev/null 2>&1; then
@@ -331,6 +332,22 @@ if [ -f "monitor-connections.sh" ]; then
     echo -e "${GREEN}✓ Connection monitor script installed to /usr/bin/monitor-connections${NC}"
 else
     echo -e "${YELLOW}⚠ monitor-connections.sh not found, skipping${NC}"
+fi
+
+if [ -f "capture-traffic.sh" ]; then
+    cp capture-traffic.sh /usr/bin/capture-traffic
+    chmod +x /usr/bin/capture-traffic
+    echo -e "${GREEN}✓ Traffic capture script installed to /usr/bin/capture-traffic${NC}"
+else
+    echo -e "${YELLOW}⚠ capture-traffic.sh not found, skipping${NC}"
+fi
+
+if [ -f "debug-connections.sh" ]; then
+    cp debug-connections.sh /usr/bin/debug-connections
+    chmod +x /usr/bin/debug-connections
+    echo -e "${GREEN}✓ Connection debug script installed to /usr/bin/debug-connections${NC}"
+else
+    echo -e "${YELLOW}⚠ debug-connections.sh not found, skipping${NC}"
 fi
 echo ""
 
