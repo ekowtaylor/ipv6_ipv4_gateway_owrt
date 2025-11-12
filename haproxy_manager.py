@@ -224,7 +224,8 @@ class HAProxyManager:
                 # Backend (IPv4 target)
                 lines.append(f"backend {backend_name}")
                 lines.append(f"    # Target device: {device_ip}:{device_port} (MAC: {mac})")
-                lines.append(f"    server device_{safe_mac} {device_ip}:{device_port} check inter 5s fall 2 rise 1")
+                lines.append(f"    # Health checks disabled - allow connections even if device is slow/down")
+                lines.append(f"    server device_{safe_mac} {device_ip}:{device_port}")
                 lines.append("")
 
         return "\n".join(lines)
