@@ -505,6 +505,23 @@ class DHCPv6Manager:
                 else:
                     self.logger.error(f"✗ Failed to configure IPv6 {obtained_ipv6} on {self.interface}")
 
+    def _verify_ipv6_present(self, ipv6: str) -> bool:
+        """
+        Verify that an IPv6 address is present on the interface.
+
+        Args:
+            ipv6: IPv6 address to verify
+
+        Returns:
+            True if address is present and ready, False otherwise
+        """
+        try:
+            addresses = self.iface.get_ipv6_addresses()
+            return ipv6 in addresses
+        except Exception as e:
+            self.logger.error(f"Failed to verify IPv6 presence: {e}")
+            return False
+
     def _enable_ipv6_on_interface(self) -> bool:
         """
         Enable IPv6 on interface for SLAAC.
