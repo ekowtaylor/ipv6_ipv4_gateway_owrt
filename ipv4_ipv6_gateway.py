@@ -984,12 +984,16 @@ class SocatProxyManager:
             # The "rawer" and "ignoreeof" options can cause issues with IPv6
             # Use standard TCP options that are universally compatible
 
+            # CRITICAL: Bind outgoing connections to gateway's LAN IP (192.168.1.1)
+            # This ensures the device receives connections from a known source and can route responses back
+            gateway_lan_ip = "192.168.1.1"  # Gateway's eth1 IP
+
             # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
             socat_cmd = [
                 cfg.CMD_SOCAT,
                 *verbose_flags,
                 f"TCP6-LISTEN:{gateway_port},bind=[{device_ipv6}],fork,reuseaddr",
-                f"TCP4:{device_ipv4}:{device_port}"
+                f"TCP4:{device_ipv4}:{device_port},bind={gateway_lan_ip}"
             ]
 
             # Start socat in background with logging to stdout
