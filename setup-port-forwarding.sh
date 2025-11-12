@@ -59,23 +59,40 @@ add_forward() {
         exit 1
     fi
 
+    # Validate port numbers (1-65535)
+    if ! echo "$WAN_PORT" | grep -qE '^[0-9]+$' || [ "$WAN_PORT" -lt 1 ] || [ "$WAN_PORT" -gt 65535 ]; then
+        echo -e "${RED}Error: Invalid WAN port number (must be 1-65535)${NC}"
+        exit 1
+    fi
+
+    if ! echo "$DEVICE_PORT" | grep -qE '^[0-9]+$' || [ "$DEVICE_PORT" -lt 1 ] || [ "$DEVICE_PORT" -gt 65535 ]; then
+        echo -e "${RED}Error: Invalid device port number (must be 1-65535)${NC}"
+        exit 1
+    fi
+
+    # Validate IP address format (basic IPv4 validation)
+    if ! echo "$DEVICE_IP" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
+        echo -e "${RED}Error: Invalid IP address format${NC}"
+        exit 1
+    fi
+
     echo -e "${YELLOW}Adding port forward: WAN:$WAN_PORT → $DEVICE_IP:$DEVICE_PORT${NC}"
 
     # DNAT rule: Redirect incoming traffic on WAN_PORT to device
-    iptables -t nat -A PREROUTING -i $WAN_INTERFACE -p tcp --dport $WAN_PORT \
-        -j DNAT --to-destination $DEVICE_IP:$DEVICE_PORT
+    iptables -t nat -A PREROUTING -i "$WAN_INTERFACE" -p tcp --dport "$WAN_PORT" \
+        -j DNAT --to-destination "$DEVICE_IP:$DEVICE_PORT"
 
     # Allow forwarding to the device
-    iptables -A FORWARD -i $WAN_INTERFACE -o $LAN_INTERFACE \
-        -p tcp -d $DEVICE_IP --dport $DEVICE_PORT -j ACCEPT
+    iptables -A FORWARD -i "$WAN_INTERFACE" -o "$LAN_INTERFACE" \
+        -p tcp -d "$DEVICE_IP" --dport "$DEVICE_PORT" -j ACCEPT
 
     # Allow return traffic
-    iptables -A FORWARD -i $LAN_INTERFACE -o $WAN_INTERFACE \
-        -p tcp -s $DEVICE_IP --sport $DEVICE_PORT -j ACCEPT
+    iptables -A FORWARD -i "$LAN_INTERFACE" -o "$WAN_INTERFACE" \
+        -p tcp -s "$DEVICE_IP" --sport "$DEVICE_PORT" -j ACCEPT
 
     # Also forward from gateway itself (for LAN access via gateway IP)
-    iptables -t nat -A OUTPUT -p tcp --dport $WAN_PORT \
-        -j DNAT --to-destination $DEVICE_IP:$DEVICE_PORT
+    iptables -t nat -A OUTPUT -p tcp --dport "$WAN_PORT" \
+        -j DNAT --to-destination "$DEVICE_IP:$DEVICE_PORT"
 
     echo -e "${GREEN}✓ Port forward added${NC}"
     echo -e "${BLUE}Access via:${NC}"
@@ -95,21 +112,38 @@ remove_forward() {
         exit 1
     fi
 
+    # Validate port numbers (1-65535)
+    if ! echo "$WAN_PORT" | grep -qE '^[0-9]+$' || [ "$WAN_PORT" -lt 1 ] || [ "$WAN_PORT" -gt 65535 ]; then
+        echo -e "${RED}Error: Invalid WAN port number (must be 1-65535)${NC}"
+        exit 1
+    fi
+
+    if ! echo "$DEVICE_PORT" | grep -qE '^[0-9]+$' || [ "$DEVICE_PORT" -lt 1 ] || [ "$DEVICE_PORT" -gt 65535 ]; then
+        echo -e "${RED}Error: Invalid device port number (must be 1-65535)${NC}"
+        exit 1
+    fi
+
+    # Validate IP address format (basic IPv4 validation)
+    if ! echo "$DEVICE_IP" | grep -qE '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$'; then
+        echo -e "${RED}Error: Invalid IP address format${NC}"
+        exit 1
+    fi
+
     echo -e "${YELLOW}Removing port forward: WAN:$WAN_PORT → $DEVICE_IP:$DEVICE_PORT${NC}"
 
     # Remove DNAT rules
-    iptables -t nat -D PREROUTING -i $WAN_INTERFACE -p tcp --dport $WAN_PORT \
-        -j DNAT --to-destination $DEVICE_IP:$DEVICE_PORT 2>/dev/null || echo "PREROUTING rule not found"
+    iptables -t nat -D PREROUTING -i "$WAN_INTERFACE" -p tcp --dport "$WAN_PORT" \
+        -j DNAT --to-destination "$DEVICE_IP:$DEVICE_PORT" 2>/dev/null || echo "PREROUTING rule not found"
 
-    iptables -t nat -D OUTPUT -p tcp --dport $WAN_PORT \
-        -j DNAT --to-destination $DEVICE_IP:$DEVICE_PORT 2>/dev/null || echo "OUTPUT rule not found"
+    iptables -t nat -D OUTPUT -p tcp --dport "$WAN_PORT" \
+        -j DNAT --to-destination "$DEVICE_IP:$DEVICE_PORT" 2>/dev/null || echo "OUTPUT rule not found"
 
     # Remove FORWARD rules
-    iptables -D FORWARD -i $WAN_INTERFACE -o $LAN_INTERFACE \
-        -p tcp -d $DEVICE_IP --dport $DEVICE_PORT -j ACCEPT 2>/dev/null || echo "FORWARD rule not found"
+    iptables -D FORWARD -i "$WAN_INTERFACE" -o "$LAN_INTERFACE" \
+        -p tcp -d "$DEVICE_IP" --dport "$DEVICE_PORT" -j ACCEPT 2>/dev/null || echo "FORWARD rule not found"
 
-    iptables -D FORWARD -i $LAN_INTERFACE -o $WAN_INTERFACE \
-        -p tcp -s $DEVICE_IP --sport $DEVICE_PORT -j ACCEPT 2>/dev/null || echo "Return FORWARD rule not found"
+    iptables -D FORWARD -i "$LAN_INTERFACE" -o "$WAN_INTERFACE" \
+        -p tcp -s "$DEVICE_IP" --sport "$DEVICE_PORT" -j ACCEPT 2>/dev/null || echo "Return FORWARD rule not found"
 
     echo -e "${GREEN}✓ Port forward removed${NC}"
 }

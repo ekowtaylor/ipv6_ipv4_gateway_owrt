@@ -23,6 +23,7 @@ from typing import Dict, List, Optional
 
 import gateway_config as cfg
 from gateway_api_server import GatewayAPIServer
+from haproxy_manager import HAProxyManager
 
 # Validate config and ensure directories/commands exist BEFORE logging setup
 cfg.validate_config()
@@ -469,6 +470,7 @@ class DHCPv6Manager:
 
     def _request_dhcpv6(self) -> bool:
         """Execute DHCPv6 request using odhcp6c (stateful - requests address)"""
+        process = None
         try:
             # -P 0: Request address (not just prefix)
             # -s: Script to execute (use default)
@@ -500,11 +502,21 @@ class DHCPv6Manager:
                     process.wait(timeout=2)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                    process.wait()
                 return False
 
         except Exception as e:
             self.logger.error(f"DHCPv6 request error: {e}")
             return False
+        finally:
+            # Ensure process is cleaned up if still running
+            if process and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
 
     def _request_dhcpv6_info_only(self) -> bool:
         """
@@ -535,7 +547,6 @@ class DHCPv6Manager:
 
         except Exception as e:
             self.logger.debug(f"DHCPv6 info-only request error (non-critical): {e}")
-            return False
             return False
 
 
@@ -1056,7 +1067,19 @@ class GatewayService:
         self.dhcpv4_manager = DHCPv4Manager(interface=cfg.ETH0_INTERFACE)
         self.device_store = DeviceStore(config_dir)
         self.firewall = FirewallManager()
-        self.socat_proxy = SocatProxyManager() if cfg.ENABLE_IPV6_TO_IPV4_PROXY else None
+
+        # Initialize proxy manager based on selected backend
+        self.proxy_manager = None
+        if cfg.ENABLE_IPV6_TO_IPV4_PROXY:
+            if cfg.IPV6_PROXY_BACKEND == "haproxy":
+                self.proxy_manager = HAProxyManager()
+                self.logger.info("Using HAProxy for IPv6→IPv4 proxying")
+            elif cfg.IPV6_PROXY_BACKEND == "socat":
+                self.proxy_manager = SocatProxyManager()
+                self.logger.info("Using socat for IPv6→IPv4 proxying")
+            else:
+                self.logger.error(f"Unknown proxy backend: {cfg.IPV6_PROXY_BACKEND}")
+
         self.eth0 = NetworkInterface(cfg.ETH0_INTERFACE)
         self.eth1 = NetworkInterface(cfg.ETH1_INTERFACE)
 
@@ -1300,9 +1323,9 @@ class GatewayService:
         if self.api_server:
             self.api_server.stop()
 
-        # Stop all socat proxies
-        if self.socat_proxy:
-            self.socat_proxy.stop_all_proxies()
+        # Stop all proxies (works for both socat and HAProxy)
+        if self.proxy_manager:
+            self.proxy_manager.stop_all_proxies()
 
         with self._devices_lock:
             self.device_store.save_devices(self.devices)
@@ -1320,6 +1343,7 @@ class GatewayService:
                 new_entries = self.arp_monitor.get_new_macs()
 
                 for mac, ipv4 in new_entries:
+                    should_spawn_thread = False
                     with self._devices_lock:
                         if mac in self.devices:
                             # Update IPv4 if changed
@@ -1334,29 +1358,43 @@ class GatewayService:
                                 mac,
                             )
                             continue
+                        # Create device and mark as "discovering" to prevent duplicate threads
                         device = DeviceMapping(mac_address=mac, ipv4_address=ipv4)
+                        device.status = "discovering"
                         self.devices[mac] = device
-                    self.logger.info("New device discovered: %s (IPv4: %s)", mac, ipv4)
+                        should_spawn_thread = True
 
-                    # Spawn discovery thread
-                    try:
-                        thread = threading.Thread(
-                            target=self._discover_addresses_for_device,
-                            args=(mac,),
-                            daemon=True,
-                            name=f"Discovery-{mac}",
-                        )
-                        thread.start()
-                        self.logger.info(
-                            f"Started discovery thread for {mac} (thread: {thread.name})"
-                        )
-                    except Exception as thread_error:
-                        self.logger.error(
-                            f"Failed to start discovery thread for {mac}: {thread_error}"
-                        )
-                        with self._devices_lock:
-                            if mac in self.devices:
-                                self.devices[mac].status = "error"
+                    if should_spawn_thread:
+                        self.logger.info("New device discovered: %s (IPv4: %s)", mac, ipv4)
+
+                        # Spawn discovery thread (with retry on failure)
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                thread = threading.Thread(
+                                    target=self._discover_addresses_for_device,
+                                    args=(mac,),
+                                    daemon=True,
+                                    name=f"Discovery-{mac}",
+                                )
+                                thread.start()
+                                self.logger.info(
+                                    f"Started discovery thread for {mac} (thread: {thread.name})"
+                                )
+                                break  # Success, exit retry loop
+                            except RuntimeError as thread_error:
+                                if attempt < max_retries - 1:
+                                    self.logger.warning(
+                                        f"Thread spawn failed for {mac} (attempt {attempt + 1}/{max_retries}), retrying..."
+                                    )
+                                    time.sleep(1)
+                                else:
+                                    self.logger.error(
+                                        f"Failed to start discovery thread for {mac} after {max_retries} attempts: {thread_error}"
+                                    )
+                                    with self._devices_lock:
+                                        if mac in self.devices:
+                                            self.devices[mac].status = "error"
 
                 time.sleep(cfg.ARP_MONITOR_INTERVAL)
 
@@ -1434,9 +1472,9 @@ class GatewayService:
                             self._setup_auto_port_forwarding_ipv4(device.ipv4_address, mac)
 
                         # IPv6→IPv4 proxying (if enabled and device is IPv4-only)
-                        if cfg.ENABLE_IPV6_TO_IPV4_PROXY and self.socat_proxy and device.ipv4_address:
-                            # Start socat proxies to allow IPv6 clients to access IPv4-only device
-                            self.socat_proxy.start_proxy_for_device(
+                        if cfg.ENABLE_IPV6_TO_IPV4_PROXY and self.proxy_manager and device.ipv4_address:
+                            # Start proxies (works for both socat and HAProxy)
+                            self.proxy_manager.start_proxy_for_device(
                                 mac=mac,
                                 device_ipv4=device.ipv4_address,
                                 port_map=cfg.AUTO_PORT_FORWARDS

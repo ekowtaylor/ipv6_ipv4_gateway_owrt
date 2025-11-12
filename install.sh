@@ -1,6 +1,9 @@
 #!/bin/bash
-#
 # Installation script for IPv4↔IPv6 Gateway Service
+# Installs Python service, network configuration, and helper scripts
+
+set -e  # Exit on error
+set -u  # Exit on unbound variable
 # Target: NanoPi R5C running OpenWrt (but also works on generic Linux with systemd)
 #
 # - Installs Python service under /opt/ipv4-ipv6-gateway
@@ -116,9 +119,10 @@ if command -v opkg >/dev/null 2>&1; then
     opkg install odhcp6c 2>/dev/null || echo -e "${YELLOW}⚠ odhcp6c installation failed or already installed${NC}"
     opkg install iptables ip6tables 2>/dev/null || echo -e "${YELLOW}⚠ iptables installation failed or already installed${NC}"
 
-    # IPv6→IPv4 proxy (required for IPv6 clients to access IPv4-only devices)
-    echo -e "${BLUE}Installing socat for IPv6→IPv4 proxying...${NC}"
+    # IPv6→IPv4 proxy options (required for IPv6 clients to access IPv4-only devices)
+    echo -e "${BLUE}Installing IPv6→IPv4 proxy options...${NC}"
     opkg install socat 2>/dev/null || echo -e "${YELLOW}⚠ socat installation failed or already installed${NC}"
+    opkg install haproxy 2>/dev/null || echo -e "${YELLOW}⚠ haproxy installation failed or already installed${NC}"
 
     # Optional but recommended: legacy tools for compatibility
     echo -e "${BLUE}Installing optional compatibility tools...${NC}"
@@ -141,7 +145,8 @@ else
     echo "  - ip-full or iproute2"
     echo "  - odhcp6c"
     echo "  - iptables and ip6tables"
-    echo "  - socat (for IPv6→IPv4 proxying)"
+    echo "  - socat (for IPv6→IPv4 proxying - lightweight)"
+    echo "  - haproxy (for IPv6→IPv4 proxying - production-grade)"
     echo "  - net-tools (optional, provides 'arp')"
     echo "  - 464xlat (for IPv4/IPv6 translation)"
 fi
@@ -171,10 +176,20 @@ echo -e "${GREEN}✓ Directories created${NC}\n"
 
 # Step 3: Copy Python files
 echo -e "${YELLOW}Step 3: Installing Python files...${NC}"
-# Assumes these files are in the current working directory
+# Validate that required Python files exist
+for file in ipv4_ipv6_gateway.py gateway_config.py gateway_api_server.py haproxy_manager.py; do
+    if [ ! -f "$file" ]; then
+        echo -e "${RED}Error: Required file '$file' not found in current directory${NC}"
+        echo -e "${YELLOW}Make sure you're running this script from the project root directory${NC}"
+        exit 1
+    fi
+done
+
+# Copy files
 cp ipv4_ipv6_gateway.py "$INSTALL_DIR/"
 cp gateway_config.py "$INSTALL_DIR/"
 cp gateway_api_server.py "$INSTALL_DIR/"
+cp haproxy_manager.py "$INSTALL_DIR/"
 chmod +x "$INSTALL_DIR/ipv4_ipv6_gateway.py"
 echo -e "${GREEN}✓ Python files installed to $INSTALL_DIR${NC}\n"
 

@@ -99,6 +99,24 @@ else
     echo -e "${BLUE}  (No socat proxies found)${NC}"
 fi
 
+# Kill any remaining HAProxy processes (IPv6→IPv4 proxies)
+echo -e "${BLUE}- Stopping HAProxy proxies...${NC}"
+HAPROXY_PIDS=$(ps | grep -E 'haproxy.*\/etc\/haproxy' | grep -v grep | awk '{print $1}')
+if [ -n "$HAPROXY_PIDS" ]; then
+    echo "$HAPROXY_PIDS" | while read pid; do
+        kill "$pid" 2>/dev/null || true
+    done
+    echo -e "${GREEN}✓ Stopped $(echo "$HAPROXY_PIDS" | wc -l) HAProxy processes${NC}"
+else
+    echo -e "${BLUE}  (No HAProxy processes found)${NC}"
+fi
+
+# Remove HAProxy config
+if [ -f "/etc/haproxy/haproxy.cfg" ]; then
+    rm -f "/etc/haproxy/haproxy.cfg"
+    echo -e "${GREEN}✓ Removed HAProxy configuration${NC}"
+fi
+
 echo -e "${GREEN}✓ Service stopped and disabled (where applicable)${NC}\n"
 
 # --- Step 2: Backup everything relevant --------------------------------------

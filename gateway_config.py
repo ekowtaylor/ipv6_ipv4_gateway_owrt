@@ -95,10 +95,24 @@ AUTO_PORT_FORWARDS = {
 # Access from WAN: gateway_wan_ip:gateway_port → device:device_port
 
 # IPv6→IPv4 Proxying (for IPv4-only devices)
-# Uses socat to proxy IPv6 connections to IPv4 devices
-ENABLE_IPV6_TO_IPV4_PROXY = True   # Enable socat-based IPv6→IPv4 proxying
+# Proxy IPv6 client connections to IPv4 backend devices
+ENABLE_IPV6_TO_IPV4_PROXY = True   # Enable IPv6→IPv4 proxying
+
+# Proxy backend selection: "socat" or "haproxy"
+# - socat: Lightweight, simple TCP proxy (good for most cases)
+# - haproxy: Production-grade proxy with better protocol handling and logging
+IPV6_PROXY_BACKEND = "haproxy"     # Options: "socat" or "haproxy" (default: haproxy)
+
+# socat-specific settings
 SOCAT_PROXY_BIND_IPV6 = "::"       # Bind to all IPv6 addresses (:: = any IPv6)
 SOCAT_PROXY_LOG_DIR = "/var/log/socat"  # Directory for socat logs (optional)
+
+# HAProxy-specific settings
+HAPROXY_CONFIG_FILE = "/etc/haproxy/haproxy.cfg"  # HAProxy config file location
+HAPROXY_STATS_ENABLE = True        # Enable HAProxy stats page
+HAPROXY_STATS_PORT = 8404          # Stats page port
+HAPROXY_STATS_URI = "/stats"       # Stats page URI
+HAPROXY_LOG_LEVEL = "info"         # HAProxy log level (emerg, alert, crit, err, warning, notice, info, debug)
 
 # Debugging
 DEBUG_MODE = False
@@ -236,17 +250,31 @@ def validate_config() -> bool:
     # Warn about optional commands if features are enabled
     for name, path in optional_commands.items():
         if not os.path.exists(path):
-            if name == "socat" and ENABLE_IPV6_TO_IPV4_PROXY:
-                # socat is required if IPv6→IPv4 proxying is enabled
+            if name == "socat" and ENABLE_IPV6_TO_IPV4_PROXY and IPV6_PROXY_BACKEND == "socat":
+                # socat is required if IPv6→IPv4 proxying is enabled with socat backend
                 raise RuntimeError(
                     f"socat command not found (looked for: {path})\n"
-                    f"IPv6→IPv4 proxying is enabled (ENABLE_IPV6_TO_IPV4_PROXY=True) but socat is not installed.\n"
+                    f"IPv6→IPv4 proxying is enabled with socat backend but socat is not installed.\n"
                     f"\nInstall with:\n"
                     f"  opkg update\n"
                     f"  opkg install socat\n"
-                    f"\nOr disable IPv6→IPv4 proxying by setting ENABLE_IPV6_TO_IPV4_PROXY=False in gateway_config.py"
+                    f"\nOr change proxy backend: IPV6_PROXY_BACKEND = 'haproxy'\n"
+                    f"Or disable IPv6→IPv4 proxying: ENABLE_IPV6_TO_IPV4_PROXY = False"
                 )
             # Not an error for other optional commands, just log that fallback will be used
             pass
+
+    # HAProxy validation (if that backend is selected)
+    if ENABLE_IPV6_TO_IPV4_PROXY and IPV6_PROXY_BACKEND == "haproxy":
+        if not which("haproxy"):
+            raise RuntimeError(
+                f"HAProxy command not found\n"
+                f"IPv6→IPv4 proxying is enabled with HAProxy backend but HAProxy is not installed.\n"
+                f"\nInstall with:\n"
+                f"  opkg update\n"
+                f"  opkg install haproxy\n"
+                f"\nOr change proxy backend: IPV6_PROXY_BACKEND = 'socat'\n"
+                f"Or disable IPv6→IPv4 proxying: ENABLE_IPV6_TO_IPV4_PROXY = False"
+            )
 
     return True
