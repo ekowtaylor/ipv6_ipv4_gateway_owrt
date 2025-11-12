@@ -182,6 +182,38 @@ if [ -f "/etc/haproxy/haproxy.cfg" ]; then
     echo -e "${GREEN}✓ Removed HAProxy configuration${NC}"
 fi
 
+# Restore IPv6 listening on LuCI and SSH (if backups exist)
+echo -e "${BLUE}- Restoring LuCI and SSH IPv6 listening (if backups exist)...${NC}"
+
+# Restore uhttpd config from backup
+UHTTPD_BACKUP=$(ls -t /etc/config/uhttpd.backup.* 2>/dev/null | head -1)
+if [ -n "$UHTTPD_BACKUP" ] && [ -f "$UHTTPD_BACKUP" ]; then
+    echo -e "${BLUE}  Restoring uhttpd config from: $UHTTPD_BACKUP${NC}"
+    cp "$UHTTPD_BACKUP" /etc/config/uhttpd
+    /etc/init.d/uhttpd restart 2>/dev/null || true
+    echo -e "${GREEN}  ✓ uhttpd configuration restored${NC}"
+else
+    echo -e "${YELLOW}  ⚠ No uhttpd backup found - LuCI may still be IPv4-only${NC}"
+    echo -e "${YELLOW}  Reconfigure manually if needed:${NC}"
+    echo "     uci set uhttpd.main.listen_http='0.0.0.0:80'"
+    echo "     uci set uhttpd.main.listen_http6='[::]:80'"
+    echo "     uci commit uhttpd && /etc/init.d/uhttpd restart"
+fi
+
+# Restore dropbear config from backup
+DROPBEAR_BACKUP=$(ls -t /etc/config/dropbear.backup.* 2>/dev/null | head -1)
+if [ -n "$DROPBEAR_BACKUP" ] && [ -f "$DROPBEAR_BACKUP" ]; then
+    echo -e "${BLUE}  Restoring dropbear config from: $DROPBEAR_BACKUP${NC}"
+    cp "$DROPBEAR_BACKUP" /etc/config/dropbear
+    /etc/init.d/dropbear restart 2>/dev/null || true
+    echo -e "${GREEN}  ✓ dropbear configuration restored${NC}"
+else
+    echo -e "${YELLOW}  ⚠ No dropbear backup found - SSH may still be LAN-only${NC}"
+    echo -e "${YELLOW}  Reconfigure manually if needed:${NC}"
+    echo "     uci delete dropbear.@dropbear[0].Interface"
+    echo "     uci commit dropbear && /etc/init.d/dropbear restart"
+fi
+
 echo -e "${GREEN}✓ Service stopped and disabled (where applicable)${NC}\n"
 
 # --- Step 2: Backup everything relevant --------------------------------------

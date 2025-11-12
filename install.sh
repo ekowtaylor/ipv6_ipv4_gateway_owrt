@@ -32,6 +32,7 @@ LOG_DIR="/var/log"
 AUTO_START=false
 APPLY_NETWORK=false
 FULL_AUTO=false
+FREE_IPV6_PORTS=true  # Default: true (automatically free IPv6 ports for gateway)
 
 for arg in "$@"; do
     case $arg in
@@ -49,26 +50,45 @@ for arg in "$@"; do
             FULL_AUTO=true
             shift
             ;;
+        --free-ipv6-ports)
+            FREE_IPV6_PORTS=true
+            shift
+            ;;
+        --no-free-ipv6-ports)
+            FREE_IPV6_PORTS=false
+            shift
+            ;;
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --auto-start      Automatically start the service after installation"
-            echo "  --apply-network   Automatically apply network configuration"
-            echo "  --full-auto       Do everything automatically (start + network)"
-            echo "  --help            Show this help message"
+            echo "  --auto-start           Automatically start the service after installation"
+            echo "  --apply-network        Automatically apply network configuration"
+            echo "  --full-auto            Do everything automatically (start + network + ports)"
+            echo "  --free-ipv6-ports      Free IPv6 ports 80/443/22 for gateway proxies (default)"
+            echo "  --no-free-ipv6-ports   Skip freeing IPv6 ports (keep LuCI/SSH on IPv6)"
+            echo "  --help                 Show this help message"
             echo ""
             echo "Default behavior (no flags):"
             echo "  - Installs all files and dependencies"
             echo "  - Enables service but DOES NOT start it"
             echo "  - Creates sample network config but DOES NOT apply it"
+            echo "  - DOES free IPv6 ports for gateway proxies (disable with --no-free-ipv6-ports)"
             echo "  - Requires manual intervention for safety"
             echo ""
             echo "Examples:"
-            echo "  $0                        # Safe mode"
-            echo "  $0 --auto-start           # Install and start service"
-            echo "  $0 --apply-network        # Install and apply network config"
-            echo "  $0 --full-auto            # Install, configure, and start everything"
+            echo "  $0                           # Safe mode (frees IPv6 ports)"
+            echo "  $0 --auto-start              # Install and start service"
+            echo "  $0 --apply-network           # Install and apply network config"
+            echo "  $0 --full-auto               # Install, configure, and start everything"
+            echo "  $0 --no-free-ipv6-ports      # Install but keep LuCI/SSH on IPv6"
+            echo ""
+            echo "IPv6 Port Freeing (enabled by default):"
+            echo "  When enabled, configures OpenWrt services to free IPv6 ports:"
+            echo "  - LuCI web UI: accessible only on http://192.168.1.1 (IPv4)"
+            echo "  - SSH: accessible only on ssh root@192.168.1.1 (IPv4)"
+            echo "  - Gateway proxies: can bind to IPv6 ports 80, 443, 22"
+            echo "  This allows IPv6 clients to access devices via standard ports."
             exit 0
             ;;
         *)
@@ -647,6 +667,75 @@ fi
 if [ -x "/etc/init.d/$SERVICE_NAME" ]; then
     /etc/init.d/$SERVICE_NAME enable || true
     echo -e "${GREEN}✓ Service enabled with init.d (OpenWrt)${NC}"
+fi
+echo ""
+
+# Step 8.5: Free IPv6 ports 80, 443, 22 for gateway proxies
+if [ "$FREE_IPV6_PORTS" = true ]; then
+    echo -e "${YELLOW}Step 8.5: Freeing IPv6 ports for gateway proxies...${NC}"
+    echo -e "${BLUE}Configuring OpenWrt services to free IPv6 ports 80, 443, 22...${NC}"
+
+    # Check if UCI is available (OpenWrt only)
+    if command -v uci >/dev/null 2>&1; then
+        # Configure uhttpd (LuCI) to IPv4 only
+        if [ -f /etc/config/uhttpd ]; then
+            echo -e "${BLUE}- Configuring LuCI web interface (uhttpd) to IPv4 only...${NC}"
+
+            # Backup current uhttpd config
+            cp /etc/config/uhttpd /etc/config/uhttpd.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+
+            # Stop uhttpd
+            /etc/init.d/uhttpd stop 2>/dev/null || true
+
+            # Set explicit IPv4 addresses for HTTP and HTTPS
+            uci set uhttpd.main.listen_http='192.168.1.1:80' 2>/dev/null || true
+            uci set uhttpd.main.listen_https='192.168.1.1:443' 2>/dev/null || true
+
+            # Delete IPv6 listeners
+            uci delete uhttpd.main.listen_http6 2>/dev/null || true
+            uci delete uhttpd.main.listen_https6 2>/dev/null || true
+
+            # Commit and restart
+            uci commit uhttpd 2>/dev/null || true
+            /etc/init.d/uhttpd start 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ LuCI configured for IPv4 only (http://192.168.1.1)${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ uhttpd config not found, skipping${NC}"
+        fi
+
+        # Configure dropbear (SSH) to LAN/IPv4 only
+        if [ -f /etc/config/dropbear ]; then
+            echo -e "${BLUE}- Configuring SSH server (dropbear) to LAN/IPv4 only...${NC}"
+
+            # Backup current dropbear config
+            cp /etc/config/dropbear /etc/config/dropbear.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
+
+            # Set Interface to 'lan' (restricts to LAN subnet, typically IPv4)
+            uci set dropbear.@dropbear[0].Interface='lan' 2>/dev/null || true
+            uci set dropbear.@dropbear[0].GatewayPorts='off' 2>/dev/null || true
+
+            # Commit and restart
+            uci commit dropbear 2>/dev/null || true
+            /etc/init.d/dropbear restart 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ SSH configured for LAN/IPv4 only (ssh root@192.168.1.1)${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ dropbear config not found, skipping${NC}"
+        fi
+
+        echo -e "${GREEN}✓ IPv6 ports 80, 443, 22 freed for gateway proxies${NC}"
+        echo -e "${BLUE}  LuCI web UI: http://192.168.1.1 (IPv4 only)${NC}"
+        echo -e "${BLUE}  SSH: ssh root@192.168.1.1 (IPv4 only)${NC}"
+        echo -e "${BLUE}  Gateway proxies: Can bind to IPv6 ports 80, 443, 22${NC}"
+    else
+        echo -e "${YELLOW}UCI not found (not OpenWrt) - skipping IPv6 port freeing${NC}"
+        echo -e "${YELLOW}Manually free ports 80, 443, 22 on IPv6 if needed${NC}"
+    fi
+else
+    echo -e "${BLUE}Step 8.5: Skipping IPv6 port freeing (--no-free-ipv6-ports specified)${NC}"
+    echo -e "${YELLOW}⚠ Gateway proxies may conflict with LuCI/SSH on IPv6 ports 80, 443, 22${NC}"
+    echo -e "${YELLOW}  Run free-ipv6-ports.sh manually if needed${NC}"
 fi
 echo ""
 
