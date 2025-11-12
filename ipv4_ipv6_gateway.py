@@ -862,12 +862,18 @@ class SocatProxyManager:
             # HTTP/HTTPS ports: 80, 443, 8080, 8443 (and any port that maps to 80/443)
             is_http_port = (device_port in [80, 443] or gateway_port in [8080, 8443])
 
+            # Verbose logging flags for socat
+            # -d -d: Double verbose mode - logs connections and data transfer
+            # -lf /dev/stdout: Log to stdout (captured by gateway log)
+            verbose_flags = ["-d", "-d", "-lf", "/dev/stdout"]
+
             if is_telnet_port:
                 # For telnet, use rawer mode to handle protocol negotiation
                 # - rawer: More transparent for binary protocols
                 # - ignoreeof: Don't close on EOF from one side
                 socat_cmd = [
                     cfg.CMD_SOCAT,
+                    *verbose_flags,
                     f"TCP6-LISTEN:{gateway_port},fork,reuseaddr,rawer,ignoreeof",
                     f"TCP4:{device_ipv4}:{device_port},rawer,ignoreeof"
                 ]
@@ -878,6 +884,7 @@ class SocatProxyManager:
                 # - ignoreeof: Don't close on EOF (HTTP/1.1 persistent connections)
                 socat_cmd = [
                     cfg.CMD_SOCAT,
+                    *verbose_flags,
                     f"TCP6-LISTEN:{gateway_port},fork,reuseaddr,nodelay,keepalive,ignoreeof",
                     f"TCP4:{device_ipv4}:{device_port},nodelay,keepalive,ignoreeof"
                 ]
@@ -889,15 +896,18 @@ class SocatProxyManager:
                 # - TCP4: Connect to IPv4
                 socat_cmd = [
                     cfg.CMD_SOCAT,
+                    *verbose_flags,
                     f"TCP6-LISTEN:{gateway_port},fork,reuseaddr",
                     f"TCP4:{device_ipv4}:{device_port}"
                 ]
 
-            # Start socat in background
+            # Start socat in background with logging to stdout
+            # stdout goes to gateway log file for debugging
+            log_file = open("/var/log/ipv4-ipv6-gateway.log", "a")
             process = subprocess.Popen(
                 socat_cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,  # Merge stderr to stdout
                 start_new_session=True  # Detach from parent
             )
 

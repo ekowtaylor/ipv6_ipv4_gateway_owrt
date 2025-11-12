@@ -136,6 +136,37 @@ if command -v opkg >/dev/null 2>&1; then
     # Additional useful tools
     opkg install procps-ng procps-ng-sysctl 2>/dev/null || echo -e "${YELLOW}⚠ procps-ng (provides 'sysctl') not available${NC}"
     opkg install nano 2>/dev/null || echo -e "${YELLOW}⚠ nano text editor not available${NC}"
+    opkg install bash 2>/dev/null || echo -e "${YELLOW}⚠ bash shell not available${NC}"
+
+    # Configure bash with history support
+    if command -v bash >/dev/null 2>&1; then
+        echo -e "${BLUE}Configuring bash with history support...${NC}"
+        cat > /root/.bashrc << 'BASHRC_EOF'
+# Bash configuration for OpenWrt
+export HISTFILE=/root/.bash_history
+export HISTSIZE=1000
+export HISTFILESIZE=2000
+export HISTCONTROL=ignoredups:erasedups
+
+# Append to history file, don't overwrite
+shopt -s histappend
+
+# Save multi-line commands as one command
+shopt -s cmdhist
+
+# Color prompt
+export PS1='\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+
+# Useful aliases
+alias ll='ls -lah'
+alias la='ls -A'
+alias l='ls -CF'
+alias gateway-logs='tail -f /var/log/ipv4-ipv6-gateway.log'
+alias gateway-restart='/etc/init.d/ipv4-ipv6-gateway restart'
+BASHRC_EOF
+        chmod 644 /root/.bashrc
+        echo -e "${GREEN}✓ bash configured with history and aliases${NC}"
+    fi
 
     echo -e "${GREEN}✓ Package installation completed${NC}"
     echo -e "${BLUE}Note: Some warnings above are normal if packages are already installed.${NC}"
