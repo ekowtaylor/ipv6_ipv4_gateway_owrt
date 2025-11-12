@@ -135,6 +135,7 @@ if command -v opkg >/dev/null 2>&1; then
 
     # Additional useful tools
     opkg install procps-ng procps-ng-sysctl 2>/dev/null || echo -e "${YELLOW}⚠ procps-ng (provides 'sysctl') not available${NC}"
+    opkg install nano 2>/dev/null || echo -e "${YELLOW}⚠ nano text editor not available${NC}"
 
     echo -e "${GREEN}✓ Package installation completed${NC}"
     echo -e "${BLUE}Note: Some warnings above are normal if packages are already installed.${NC}"
