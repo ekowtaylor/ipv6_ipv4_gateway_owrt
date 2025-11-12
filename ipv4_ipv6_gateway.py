@@ -980,42 +980,17 @@ class SocatProxyManager:
             # -lf /dev/stdout: Log to stdout (captured by gateway log)
             verbose_flags = ["-d", "-d", "-lf", "/dev/stdout"]
 
-            if is_telnet_port:
-                # For telnet, use rawer mode to handle protocol negotiation
-                # - rawer: More transparent for binary protocols
-                # - ignoreeof: Don't close on EOF from one side
-                # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
-                socat_cmd = [
-                    cfg.CMD_SOCAT,
-                    *verbose_flags,
-                    f"TCP6-LISTEN:{gateway_port},bind=[{device_ipv6}],fork,reuseaddr,rawer,ignoreeof",
-                    f"TCP4:{device_ipv4}:{device_port},rawer,ignoreeof"
-                ]
-            elif is_http_port:
-                # For HTTP/HTTPS, use options to handle keep-alive and binary data
-                # - nodelay: Disable Nagle's algorithm for better HTTP performance
-                # - keepalive: Enable TCP keep-alive for persistent connections
-                # - ignoreeof: Don't close on EOF (HTTP/1.1 persistent connections)
-                # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
-                socat_cmd = [
-                    cfg.CMD_SOCAT,
-                    *verbose_flags,
-                    f"TCP6-LISTEN:{gateway_port},bind=[{device_ipv6}],fork,reuseaddr,nodelay,keepalive,ignoreeof",
-                    f"TCP4:{device_ipv4}:{device_port},nodelay,keepalive,ignoreeof"
-                ]
-            else:
-                # Standard TCP proxy for other services (SSH, VNC, RDP, etc.)
-                # - TCP6-LISTEN: Listen on IPv6
-                # - fork: Handle multiple connections
-                # - reuseaddr: Allow quick restart
-                # - TCP4: Connect to IPv4
-                # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
-                socat_cmd = [
-                    cfg.CMD_SOCAT,
-                    *verbose_flags,
-                    f"TCP6-LISTEN:{gateway_port},bind=[{device_ipv6}],fork,reuseaddr",
-                    f"TCP4:{device_ipv4}:{device_port}"
-                ]
+            # SIMPLIFIED SOCAT COMMANDS - Use minimal options that work with all protocols
+            # The "rawer" and "ignoreeof" options can cause issues with IPv6
+            # Use standard TCP options that are universally compatible
+
+            # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
+            socat_cmd = [
+                cfg.CMD_SOCAT,
+                *verbose_flags,
+                f"TCP6-LISTEN:{gateway_port},bind=[{device_ipv6}],fork,reuseaddr",
+                f"TCP4:{device_ipv4}:{device_port}"
+            ]
 
             # Start socat in background with logging to stdout
             # stdout goes to gateway log file for debugging
