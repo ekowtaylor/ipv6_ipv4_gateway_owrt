@@ -324,6 +324,14 @@ if [ -f "setup-port-forwarding.sh" ]; then
 else
     echo -e "${YELLOW}⚠ setup-port-forwarding.sh not found, skipping${NC}"
 fi
+
+if [ -f "monitor-connections.sh" ]; then
+    cp monitor-connections.sh /usr/bin/monitor-connections
+    chmod +x /usr/bin/monitor-connections
+    echo -e "${GREEN}✓ Connection monitor script installed to /usr/bin/monitor-connections${NC}"
+else
+    echo -e "${YELLOW}⚠ monitor-connections.sh not found, skipping${NC}"
+fi
 echo ""
 
 # Step 4: Create systemd service file (only if systemd exists)
