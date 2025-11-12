@@ -31,29 +31,31 @@ class HAProxyManager:
 
     def __init__(self):
         self.logger = logging.getLogger("HAProxyManager")
-        self.devices: Dict[str, Dict] = {}  # {mac: {"ipv4": "...", "ports": {...}}}
+        self.devices: Dict[str, Dict] = {}  # {mac: {"ipv4": "...", "ipv6": "...", "ports": {...}}}
         self._lock = threading.Lock()
         self.haproxy_process: Optional[subprocess.Popen] = None
         self.config_file = cfg.HAPROXY_CONFIG_FILE
 
-    def start_proxy_for_device(self, mac: str, device_ipv4: str, port_map: Dict[int, int]) -> bool:
+    def start_proxy_for_device(self, mac: str, device_ipv4: str, device_ipv6: str, port_map: Dict[int, int]) -> bool:
         """
         Add device to HAProxy configuration and reload.
 
         Args:
             mac: Device MAC address
             device_ipv4: Device's LAN IPv4 address (e.g., "192.168.1.128")
+            device_ipv6: Device's WAN IPv6 address (e.g., "2620:10d:c050:100:46b7:d0ff:fea6:6dfc")
             port_map: Port mapping {gateway_port: device_port}
 
         Returns:
             True if proxy configuration updated successfully
         """
-        self.logger.info(f"Adding IPv6→IPv4 HAProxy config for device {device_ipv4} (MAC: {mac})")
+        self.logger.info(f"Adding IPv6→IPv4 HAProxy config for device {device_ipv4} (IPv6: {device_ipv6}, MAC: {mac})")
 
         with self._lock:
             # Store device config
             self.devices[mac] = {
                 "ipv4": device_ipv4,
+                "ipv6": device_ipv6,
                 "ports": port_map
             }
 
@@ -199,6 +201,7 @@ class HAProxyManager:
         # Frontend/backend for each device and port
         for mac, info in self.devices.items():
             device_ip = info["ipv4"]
+            device_ipv6 = info["ipv6"]
             port_map = info["ports"]
 
             # Sanitize MAC for use in names (replace : with _)
@@ -207,13 +210,14 @@ class HAProxyManager:
             for gateway_port, device_port in port_map.items():
                 # Determine service name for better identification
                 service_name = self._get_service_name(device_port)
-                frontend_name = f"ipv6_{service_name}_{gateway_port}"
+                frontend_name = f"ipv6_{service_name}_{safe_mac}_{gateway_port}"
                 backend_name = f"ipv4_{service_name}_{safe_mac}"
 
-                # Frontend (IPv6 listener)
+                # Frontend (IPv6 listener) - BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
                 lines.append(f"frontend {frontend_name}")
-                lines.append(f"    bind :::{gateway_port} v6only")
-                lines.append(f"    # Proxy: IPv6 clients → {device_ip}:{device_port}")
+                lines.append(f"    bind [{device_ipv6}]:{gateway_port} v6only")
+                lines.append(f"    # Device IPv6: {device_ipv6}:{gateway_port} → IPv4: {device_ip}:{device_port}")
+                lines.append(f"    # MAC: {mac}")
                 lines.append(f"    default_backend {backend_name}")
                 lines.append("")
 

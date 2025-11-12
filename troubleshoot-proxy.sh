@@ -35,7 +35,7 @@ echo ""
 
 # Step 2: Check if proxy is enabled
 echo -e "${YELLOW}Step 2: Checking if proxy is enabled...${NC}"
-PROXY_ENABLED=$(grep "ENABLE_IPV6_TO_IPV4_PROXY" "$INSTALL_DIR/gateway_config.py" | grep -o 'True\|False')
+PROXY_ENABLED=$(grep "^ENABLE_IPV6_TO_IPV4_PROXY" "$INSTALL_DIR/gateway_config.py" | grep -o 'True\|False' | head -1)
 if [ "$PROXY_ENABLED" = "True" ]; then
     echo -e "${GREEN}✓ IPv6→IPv4 proxy is enabled${NC}"
 else

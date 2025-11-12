@@ -812,19 +812,20 @@ class SocatProxyManager:
         self.proxies: Dict[str, Dict[int, subprocess.Popen]] = {}  # {mac: {port: process}}
         self._lock = threading.Lock()
 
-    def start_proxy_for_device(self, mac: str, device_ipv4: str, port_map: Dict[int, int]) -> bool:
+    def start_proxy_for_device(self, mac: str, device_ipv4: str, device_ipv6: str, port_map: Dict[int, int]) -> bool:
         """
         Start socat proxies for all ports for a device.
 
         Args:
             mac: Device MAC address
             device_ipv4: Device's LAN IPv4 address (e.g., "192.168.1.128")
+            device_ipv6: Device's WAN IPv6 address (e.g., "2620:10d:c050:100:46b7:d0ff:fea6:6dfc")
             port_map: Port mapping {gateway_port: device_port}
 
         Returns:
             True if all proxies started successfully
         """
-        self.logger.info(f"Starting IPv6→IPv4 proxies for device {device_ipv4} (MAC: {mac})")
+        self.logger.info(f"Starting IPv6→IPv4 proxies for device {device_ipv4} (IPv6: {device_ipv6}, MAC: {mac})")
 
         with self._lock:
             if mac not in self.proxies:
@@ -832,7 +833,7 @@ class SocatProxyManager:
 
             success_count = 0
             for gateway_port, device_port in port_map.items():
-                if self._start_single_proxy(mac, device_ipv4, gateway_port, device_port):
+                if self._start_single_proxy(mac, device_ipv4, device_ipv6, gateway_port, device_port):
                     success_count += 1
 
             self.logger.info(
@@ -840,7 +841,7 @@ class SocatProxyManager:
             )
             return success_count > 0
 
-    def _start_single_proxy(self, mac: str, device_ipv4: str, gateway_port: int, device_port: int) -> bool:
+    def _start_single_proxy(self, mac: str, device_ipv4: str, device_ipv6: str, gateway_port: int, device_port: int) -> bool:
         """Start a single socat proxy for one port"""
         try:
             # Check if proxy already running for this port
@@ -871,10 +872,11 @@ class SocatProxyManager:
                 # For telnet, use rawer mode to handle protocol negotiation
                 # - rawer: More transparent for binary protocols
                 # - ignoreeof: Don't close on EOF from one side
+                # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
                 socat_cmd = [
                     cfg.CMD_SOCAT,
                     *verbose_flags,
-                    f"TCP6-LISTEN:{gateway_port},fork,reuseaddr,rawer,ignoreeof",
+                    f"TCP6-LISTEN:{gateway_port},bind=[{device_ipv6}],fork,reuseaddr,rawer,ignoreeof",
                     f"TCP4:{device_ipv4}:{device_port},rawer,ignoreeof"
                 ]
             elif is_http_port:
@@ -882,10 +884,11 @@ class SocatProxyManager:
                 # - nodelay: Disable Nagle's algorithm for better HTTP performance
                 # - keepalive: Enable TCP keep-alive for persistent connections
                 # - ignoreeof: Don't close on EOF (HTTP/1.1 persistent connections)
+                # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
                 socat_cmd = [
                     cfg.CMD_SOCAT,
                     *verbose_flags,
-                    f"TCP6-LISTEN:{gateway_port},fork,reuseaddr,nodelay,keepalive,ignoreeof",
+                    f"TCP6-LISTEN:{gateway_port},bind=[{device_ipv6}],fork,reuseaddr,nodelay,keepalive,ignoreeof",
                     f"TCP4:{device_ipv4}:{device_port},nodelay,keepalive,ignoreeof"
                 ]
             else:
@@ -894,10 +897,11 @@ class SocatProxyManager:
                 # - fork: Handle multiple connections
                 # - reuseaddr: Allow quick restart
                 # - TCP4: Connect to IPv4
+                # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
                 socat_cmd = [
                     cfg.CMD_SOCAT,
                     *verbose_flags,
-                    f"TCP6-LISTEN:{gateway_port},fork,reuseaddr",
+                    f"TCP6-LISTEN:{gateway_port},bind=[{device_ipv6}],fork,reuseaddr",
                     f"TCP4:{device_ipv4}:{device_port}"
                 ]
 
@@ -933,7 +937,7 @@ class SocatProxyManager:
                 proxy_type = "standard"
 
             self.logger.info(
-                f"IPv6→IPv4 proxy ({proxy_type}): [::]:{gateway_port} → {device_ipv4}:{device_port} "
+                f"IPv6→IPv4 proxy ({proxy_type}): [{device_ipv6}]:{gateway_port} → {device_ipv4}:{device_port} "
                 f"(PID: {process.pid})"
             )
             return True
@@ -1481,12 +1485,14 @@ class GatewayService:
                         if device.ipv4_address:
                             self._setup_auto_port_forwarding_ipv4(device.ipv4_address, mac)
 
-                        # IPv6→IPv4 proxying (if enabled and device is IPv4-only)
-                        if cfg.ENABLE_IPV6_TO_IPV4_PROXY and self.proxy_manager and device.ipv4_address:
+                        # IPv6→IPv4 proxying (if enabled and device has both IPv4 and IPv6)
+                        if cfg.ENABLE_IPV6_TO_IPV4_PROXY and self.proxy_manager and device.ipv4_address and device.ipv6_address:
                             # Start proxies (works for both socat and HAProxy)
+                            # Pass device's IPv6 address so proxy binds to it specifically
                             self.proxy_manager.start_proxy_for_device(
                                 mac=mac,
                                 device_ipv4=device.ipv4_address,
+                                device_ipv6=device.ipv6_address,  # Device's unique IPv6 address
                                 port_map=cfg.AUTO_PORT_FORWARDS
                             )
                 else:

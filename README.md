@@ -291,19 +291,36 @@ IPv4 Client → Gateway WAN:8080 → NAT (iptables) → Device LAN:80
 Example: curl http://100.124.66.225:8080  # Gateway WAN IPv4
 ```
 
-#### **IPv6→IPv4 Proxying (socat) - NEW!**
+#### **IPv6→IPv4 Proxying (HAProxy/socat) - Device-Specific Binding!** ⭐ NEW ARCHITECTURE ⭐
 ```
-IPv6 Client → Gateway WAN IPv6:23 → socat proxy → Device LAN:80
-Example: telnet 2620:10d:c050:100:46b7:d0ff:fea6:6dfc 23
+IPv6 Client → Device's IPv6:2323 → HAProxy/socat (on gateway) → Device LAN:23
+Example: telnet 2620:10d:c050:100:46b7:d0ff:fea6:6dfc 2323
 ```
 
-**Key Difference:**
+**🎯 Key Architecture Feature:**
+
+Each device gets its **OWN unique IPv6 address**, and HAProxy/socat binds to that specific address:
+
+- **Device 1**: IPv6 `2620:10d:c050:100:46b7:d0ff:fea6:6dfc` → HAProxy binds to this IPv6
+- **Device 2**: IPv6 `2620:10d:c050:100:1234:5678:abcd:ef00` → HAProxy binds to this IPv6
+- **Result**: Both devices can use the same ports (23, 80, etc.) without conflict!
+
+**How it works:**
+1. Gateway discovers device MAC `44:b7:d0:a6:6d:fc`
+2. Gateway spoofs that MAC on eth0 and requests DHCPv6
+3. DHCPv6 server assigns unique IPv6: `2620:10d:c050:100:46b7:d0ff:fea6:6dfc`
+4. HAProxy/socat binds to that **specific IPv6** (not to `:::` all addresses)
+5. Clients connect directly to the device's IPv6 → proxy forwards to device's IPv4
+
+**Key Differences:**
 - **IPv4 NAT**: Device traffic goes through iptables NAT
-- **IPv6→IPv4 Proxy**: socat proxies IPv6 connections to IPv4-only devices
+- **IPv6→IPv4 Proxy**: HAProxy/socat proxies IPv6 connections to IPv4-only devices
+- **Device-Specific Binding**: Each device's proxy listens on its unique IPv6 address
 
-**Why needed?** Most devices are IPv4-only and have no IPv6 stack. The gateway's WAN
-IPv6 address (obtained via MAC spoofing) is on the gateway itself, not the device.
-socat bridges IPv6 clients → IPv4-only devices seamlessly.
+**Why needed?** Most devices are IPv4-only and have no IPv6 stack. The IPv6 address
+obtained via MAC spoofing is assigned to the gateway's eth0, not to the device itself.
+HAProxy/socat bridges IPv6 clients → IPv4-only devices transparently by binding to each
+device's unique IPv6 address and forwarding to the device's LAN IPv4.
 
 ### Access from Client
 
