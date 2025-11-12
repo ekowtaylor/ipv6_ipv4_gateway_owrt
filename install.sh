@@ -98,8 +98,8 @@ echo -e "${GREEN}IPv4↔IPv6 Gateway Service Installer${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo -e "${BLUE}Detected init system: $INIT_SYSTEM${NC}\n"
 
-# Check if running as root
-if [[ $EUID -ne 0 ]]; then
+# Check if running as root (portable method)
+if [ "$(id -u)" -ne 0 ]; then
    echo -e "${RED}This script must be run as root${NC}"
    exit 1
 fi
