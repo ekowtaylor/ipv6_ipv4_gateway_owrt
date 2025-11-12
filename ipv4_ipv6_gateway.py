@@ -505,6 +505,10 @@ class DHCPv6Manager:
                 else:
                     self.logger.error(f"✗ Failed to configure IPv6 {obtained_ipv6} on {self.interface}")
 
+            # CRITICAL FIX: Return the obtained IPv6 from the finally block
+            # Without this, the function returns None even on success
+            return obtained_ipv6
+
     def _verify_ipv6_present(self, ipv6: str) -> bool:
         """
         Verify that an IPv6 address is present on the interface.
@@ -648,13 +652,16 @@ class DHCPv6Manager:
                 stdout, stderr = process.communicate(timeout=7)
                 if process.returncode == 0:
                     self.logger.debug("DHCPv6 info-only request succeeded")
-                return True
+                    return True
+                # CRITICAL FIX: Return False if process failed, not True
+                return False
             except subprocess.TimeoutExpired:
                 process.terminate()
                 try:
                     process.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                    process.wait()  # Wait after kill to prevent zombie
                 return False
 
         except Exception as e:
@@ -922,6 +929,7 @@ class SocatProxyManager:
     def __init__(self):
         self.logger = logging.getLogger("SocatProxyManager")
         self.proxies: Dict[str, Dict[int, subprocess.Popen]] = {}  # {mac: {port: process}}
+        self.log_files: Dict[str, Dict[int, object]] = {}  # {mac: {port: log_file_handle}}
         self._lock = threading.Lock()
 
     def start_proxy_for_device(self, mac: str, device_ipv4: str, device_ipv6: str, port_map: Dict[int, int]) -> bool:
@@ -996,15 +1004,30 @@ class SocatProxyManager:
                 f"TCP4:{device_ipv4}:{device_port},bind={gateway_lan_ip}"
             ]
 
-            # Start socat in background with logging to stdout
-            # stdout goes to gateway log file for debugging
-            log_file = open("/var/log/ipv4-ipv6-gateway.log", "a")
+            # Start socat in background with logging
+            # CRITICAL FIX: Ensure log path exists and is writable
+            log_path = Path(cfg.LOG_FILE)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Open log file for this proxy (will be closed when process terminates)
+            try:
+                log_file = open(log_path, "a")
+            except IOError as e:
+                self.logger.error(f"Cannot open log file {log_path}: {e}")
+                # Fallback to /dev/null
+                log_file = open("/dev/null", "a")
+
             process = subprocess.Popen(
                 socat_cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,  # Merge stderr to stdout
                 start_new_session=True  # Detach from parent
             )
+
+            # Store log file handle so we can close it later
+            if mac not in self.log_files:
+                self.log_files[mac] = {}
+            self.log_files[mac][gateway_port] = log_file
 
             # Wait a moment to see if it crashes immediately
             time.sleep(0.1)
@@ -1060,7 +1083,18 @@ class SocatProxyManager:
                 except Exception as e:
                     self.logger.error(f"Error stopping proxy for {mac} port {port}: {e}")
 
+                # CRITICAL FIX: Close log file handle to prevent resource leak
+                if mac in self.log_files and port in self.log_files[mac]:
+                    try:
+                        self.log_files[mac][port].close()
+                        del self.log_files[mac][port]
+                    except Exception as e:
+                        self.logger.error(f"Error closing log file for {mac} port {port}: {e}")
+
             del self.proxies[mac]
+            # Clean up log files dict if empty
+            if mac in self.log_files and not self.log_files[mac]:
+                del self.log_files[mac]
 
     def stop_all_proxies(self) -> None:
         """Stop all socat proxies"""
@@ -1441,7 +1475,7 @@ class GatewayService:
 
     def _discovery_loop(self) -> None:
         """Main loop: discover new MACs and request IPv6"""
-        self.logger.info("Discovery loop started")
+        self.logger.info("Discovery loop started (SINGLE DEVICE MODE)")
 
         while self.running:
             try:
@@ -1449,31 +1483,59 @@ class GatewayService:
 
                 for mac, ipv4 in new_entries:
                     should_spawn_thread = False
+                    replaced_device_mac = None
+
                     with self._devices_lock:
+                        # SINGLE DEVICE MODE: If we already have a device, remove it first
+                        if len(self.devices) > 0:
+                            # Get the current device's MAC
+                            current_macs = list(self.devices.keys())
+                            if mac not in current_macs:
+                                # New device detected - replace the old one
+                                replaced_device_mac = current_macs[0]
+                                old_device = self.devices[replaced_device_mac]
+
+                                self.logger.warning(
+                                    f"🔄 NEW DEVICE DETECTED: Replacing {replaced_device_mac} "
+                                    f"(IPv4: {old_device.ipv4_address}) with {mac} (IPv4: {ipv4})"
+                                )
+
+                                # Stop proxies for old device
+                                if self.proxy_manager:
+                                    self.proxy_manager.stop_proxies_for_device(replaced_device_mac)
+
+                                # Remove old device
+                                del self.devices[replaced_device_mac]
+                                self.arp_monitor.known_macs.discard(replaced_device_mac)
+
+                                self.logger.info(f"✓ Removed old device {replaced_device_mac}")
+
+                        # Check if this MAC is already being tracked
                         if mac in self.devices:
                             # Update IPv4 if changed
                             if self.devices[mac].ipv4_address != ipv4:
                                 self.devices[mac].ipv4_address = ipv4
                                 self.logger.info(f"Updated IPv4 for {mac}: {ipv4}")
                             continue
-                        if len(self.devices) >= cfg.MAX_DEVICES:
-                            self.logger.warning(
-                                "Max devices reached (%d); ignoring new MAC %s",
-                                cfg.MAX_DEVICES,
-                                mac,
-                            )
-                            continue
-                        # Create device and mark as "discovering" to prevent duplicate threads
+
+                        # Create new device and mark as "discovering"
                         device = DeviceMapping(mac_address=mac, ipv4_address=ipv4)
                         device.status = "discovering"
                         self.devices[mac] = device
                         should_spawn_thread = True
 
                     if should_spawn_thread:
-                        self.logger.info("New device discovered: %s (IPv4: %s)", mac, ipv4)
+                        if replaced_device_mac:
+                            self.logger.info(
+                                f"🆕 Configuring new device: {mac} (IPv4: {ipv4}) "
+                                f"[Replaced: {replaced_device_mac}]"
+                            )
+                        else:
+                            self.logger.info(f"🆕 New device discovered: {mac} (IPv4: {ipv4})")
 
                         # Spawn discovery thread (with retry on failure)
                         max_retries = 3
+                        thread_spawned = False
                         for attempt in range(max_retries):
                             try:
                                 thread = threading.Thread(
@@ -1486,6 +1548,7 @@ class GatewayService:
                                 self.logger.info(
                                     f"Started discovery thread for {mac} (thread: {thread.name})"
                                 )
+                                thread_spawned = True
                                 break  # Success, exit retry loop
                             except RuntimeError as thread_error:
                                 if attempt < max_retries - 1:
@@ -1497,9 +1560,11 @@ class GatewayService:
                                     self.logger.error(
                                         f"Failed to start discovery thread for {mac} after {max_retries} attempts: {thread_error}"
                                     )
+                                    # CRITICAL FIX: Clean up device if all thread spawn attempts failed
                                     with self._devices_lock:
                                         if mac in self.devices:
                                             self.devices[mac].status = "error"
+                                            self.logger.error(f"Marked device {mac} as error due to thread spawn failure")
 
                 time.sleep(cfg.ARP_MONITOR_INTERVAL)
 
@@ -1589,14 +1654,15 @@ class GatewayService:
                             self._setup_auto_port_forwarding_ipv4(device.ipv4_address, mac)
 
                         # IPv6→IPv4 proxying (if enabled and device has both IPv4 and IPv6)
+                        # Use separate port mapping for IPv6 (only firewall-allowed ports)
                         if cfg.ENABLE_IPV6_TO_IPV4_PROXY and self.proxy_manager and device.ipv4_address and device.ipv6_address:
-                            # Start proxies (works for both socat and HAProxy)
+                            # Start proxies with FIREWALL-ALLOWED ports only (telnet 23, HTTP 80)
                             # Pass device's IPv6 address so proxy binds to it specifically
                             self.proxy_manager.start_proxy_for_device(
                                 mac=mac,
                                 device_ipv4=device.ipv4_address,
                                 device_ipv6=device.ipv6_address,  # Device's unique IPv6 address
-                                port_map=cfg.AUTO_PORT_FORWARDS
+                                port_map=cfg.IPV6_PROXY_PORT_FORWARDS  # Only telnet & HTTP!
                             )
                 else:
                     device.status = "failed"

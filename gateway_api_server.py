@@ -218,21 +218,23 @@ class GatewayAPIHandler(BaseHTTPRequestHandler):
         self.send_json_response(device.to_dict())
 
     def handle_export(self) -> None:
-        """POST /admin/export - Export all device mappings"""
-        if not self.gateway_service:
-            self.send_error_response("Gateway service not available", 503)
-            return
+        """Export all devices as JSON (for backup/restore)"""
+        try:
+            devices = self.gateway_service.list_devices()
+            # CRITICAL FIX: Add error handling for device serialization
+            try:
+                device_dict = {d.mac_address: d.to_dict() for d in devices}
+            except Exception as e:
+                self.send_error_response(f"Failed to serialize devices: {e}", 500)
+                return
 
-        devices = self.gateway_service.list_devices()
-        device_dict = {d.mac_address: d.to_dict() for d in devices}
-
-        self.send_json_response(
-            {
+            self.send_json_response({
                 "exported_at": datetime.now().isoformat(),
                 "device_count": len(devices),
                 "devices": device_dict,
-            }
-        )
+            })
+        except Exception as e:
+            self.send_error_response(f"Failed to export devices: {e}", 500)
 
     def handle_clear_cache(self, data: Dict[str, Any]) -> None:
         """POST /admin/clear-cache - Clear device cache"""

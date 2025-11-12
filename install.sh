@@ -679,7 +679,8 @@ if [ "$FREE_IPV6_PORTS" = true ]; then
     if command -v uci >/dev/null 2>&1; then
         # Configure uhttpd (LuCI) to IPv4 only
         if [ -f /etc/config/uhttpd ]; then
-            echo -e "${BLUE}- Configuring LuCI web interface (uhttpd) to IPv4 only...${NC}"
+            echo -e "${BLUE}- Configuring LuCI web interface (uhttpd) to LAN IPv4 only...${NC}"
+            echo -e "${BLUE}  This frees up WAN ports 80/443 for device IPv6→IPv4 proxies${NC}"
 
             # Backup current uhttpd config
             cp /etc/config/uhttpd /etc/config/uhttpd.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
@@ -687,31 +688,37 @@ if [ "$FREE_IPV6_PORTS" = true ]; then
             # Stop uhttpd
             /etc/init.d/uhttpd stop 2>/dev/null || true
 
-            # Set explicit IPv4 addresses for HTTP and HTTPS
-            uci set uhttpd.main.listen_http='192.168.1.1:80' 2>/dev/null || true
-            uci set uhttpd.main.listen_https='192.168.1.1:443' 2>/dev/null || true
-
-            # Delete IPv6 listeners
+            # CRITICAL: Remove any wildcard bindings (including IPv6 [::])
+            # This ensures LuCI doesn't bind to WAN interface
+            uci delete uhttpd.main.listen_http 2>/dev/null || true
+            uci delete uhttpd.main.listen_https 2>/dev/null || true
             uci delete uhttpd.main.listen_http6 2>/dev/null || true
             uci delete uhttpd.main.listen_https6 2>/dev/null || true
+
+            # Set explicit LAN IPv4 addresses ONLY
+            # This binds to 192.168.1.1 (LAN) and leaves WAN free
+            uci add_list uhttpd.main.listen_http='192.168.1.1:80' 2>/dev/null || true
+            uci add_list uhttpd.main.listen_https='192.168.1.1:443' 2>/dev/null || true
 
             # Commit and restart
             uci commit uhttpd 2>/dev/null || true
             /etc/init.d/uhttpd start 2>/dev/null || true
 
-            echo -e "${GREEN}  ✓ LuCI configured for IPv4 only (http://192.168.1.1)${NC}"
+            echo -e "${GREEN}  ✓ LuCI bound to LAN only (http://192.168.1.1)${NC}"
+            echo -e "${GREEN}  ✓ WAN ports 80/443 now available for device proxies${NC}"
         else
             echo -e "${YELLOW}  ⚠ uhttpd config not found, skipping${NC}"
         fi
 
         # Configure dropbear (SSH) to LAN/IPv4 only
         if [ -f /etc/config/dropbear ]; then
-            echo -e "${BLUE}- Configuring SSH server (dropbear) to LAN/IPv4 only...${NC}"
+            echo -e "${BLUE}- Configuring SSH server (dropbear) to LAN only...${NC}"
+            echo -e "${BLUE}  This frees up WAN port 22 for device IPv6→IPv4 proxies${NC}"
 
             # Backup current dropbear config
             cp /etc/config/dropbear /etc/config/dropbear.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || true
 
-            # Set Interface to 'lan' (restricts to LAN subnet, typically IPv4)
+            # Set Interface to 'lan' (restricts to LAN subnet, blocks WAN access)
             uci set dropbear.@dropbear[0].Interface='lan' 2>/dev/null || true
             uci set dropbear.@dropbear[0].GatewayPorts='off' 2>/dev/null || true
 

@@ -34,6 +34,7 @@ class HAProxyManager:
         self.devices: Dict[str, Dict] = {}  # {mac: {"ipv4": "...", "ipv6": "...", "ports": {...}}}
         self._lock = threading.Lock()
         self.haproxy_process: Optional[subprocess.Popen] = None
+        self.haproxy_log_file: Optional[object] = None  # Track log file handle
         self.config_file = cfg.HAPROXY_CONFIG_FILE
 
     def start_proxy_for_device(self, mac: str, device_ipv4: str, device_ipv6: str, port_map: Dict[int, int]) -> bool:
@@ -98,11 +99,19 @@ class HAProxyManager:
                     self.haproxy_process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     self.haproxy_process.kill()
-                    self.haproxy_process.wait()
+                    self.haproxy_process.wait()  # Wait after kill to prevent zombie
                 except Exception as e:
                     self.logger.error(f"Error stopping HAProxy: {e}")
 
                 self.haproxy_process = None
+
+            # CRITICAL FIX: Close log file handle
+            if self.haproxy_log_file:
+                try:
+                    self.haproxy_log_file.close()
+                    self.haproxy_log_file = None
+                except Exception as e:
+                    self.logger.error(f"Error closing HAProxy log file: {e}")
 
             # Also try system service stop
             try:
@@ -164,6 +173,8 @@ class HAProxyManager:
 
     def _build_haproxy_config(self) -> str:
         """Build complete HAProxy configuration"""
+        import ipaddress  # For IP validation
+
         lines = []
 
         # Global section
@@ -204,6 +215,14 @@ class HAProxyManager:
             device_ip = info["ipv4"]
             device_ipv6 = info["ipv6"]
             port_map = info["ports"]
+
+            # CRITICAL FIX: Validate IP addresses to prevent config injection
+            try:
+                ipaddress.IPv4Address(device_ip)
+                ipaddress.IPv6Address(device_ipv6)
+            except ValueError as e:
+                self.logger.error(f"Invalid IP address for device {mac}: IPv4={device_ip}, IPv6={device_ipv6}. Error: {e}")
+                continue  # Skip this device
 
             # Sanitize MAC for use in names (replace : with _)
             safe_mac = mac.replace(":", "_")
@@ -273,8 +292,26 @@ class HAProxyManager:
             # Start HAProxy directly with output capture
             self.logger.info("Starting HAProxy with configuration...")
 
-            # Open log file for HAProxy output
-            log_file = open("/var/log/ipv4-ipv6-gateway.log", "a")
+            # CRITICAL FIX: Ensure log path exists and handle errors
+            log_path = Path(cfg.LOG_FILE)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                log_file = open(log_path, "a")
+            except IOError as e:
+                self.logger.error(f"Cannot open log file {log_path}: {e}")
+                # Fallback to /dev/null
+                log_file = open("/dev/null", "a")
+
+            # Close any previously open log file
+            if self.haproxy_log_file:
+                try:
+                    self.haproxy_log_file.close()
+                except Exception:
+                    pass
+
+            # Store log file handle for cleanup
+            self.haproxy_log_file = log_file
 
             self.haproxy_process = subprocess.Popen(
                 ["haproxy", "-f", self.config_file],

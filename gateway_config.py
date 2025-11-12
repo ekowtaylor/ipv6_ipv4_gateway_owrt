@@ -77,27 +77,55 @@ DEVICE_STATUS_TIMEOUT = 300  # Mark device inactive after 5 minutes
 
 # Connection limits
 MAX_CONCURRENT_DHCPV6_REQUESTS = 5
-MAX_DEVICES = 1000
+MAX_DEVICES = 1  # SINGLE DEVICE MODE: Only one device supported at a time
 
 # Automatic Port Forwarding
 # When a device is discovered, automatically forward these ports
 # Format: {gateway_port: device_port}
+#
+# IMPORTANT: Gateway ports are remapped to avoid conflicts with OpenWrt services!
+# The OpenWrt gateway itself runs services on standard ports (80, 22, 443, etc.)
+# so we map device ports to non-conflicting external ports.
+#
+# Example: Device's HTTP (port 80) is accessible via gateway's port 8080
 ENABLE_AUTO_PORT_FORWARDING = True
 AUTO_PORT_FORWARDS = {
-    80: 80,        # HTTP (direct - no translation, Meta allows port 80)
-    23: 23,        # Telnet (direct - standard port)
-    443: 443,      # HTTPS (direct - no translation, Meta allows port 443)
-    22: 22,        # SSH (direct - standard port)
-    5900: 5900,    # VNC
-    3389: 3389,    # RDP
+    8080: 80,      # HTTP: Gateway:8080 → Device:80 (avoids conflict with OpenWrt's LuCI)
+    2323: 23,      # Telnet: Gateway:2323 → Device:23 (avoids conflict if OpenWrt runs telnet)
+    8443: 443,     # HTTPS: Gateway:8443 → Device:443 (avoids conflict with OpenWrt's LuCI HTTPS)
+    2222: 22,      # SSH: Gateway:2222 → Device:22 (avoids conflict with OpenWrt's SSH/dropbear)
+    5900: 5900,    # VNC (no conflict - OpenWrt doesn't typically run VNC)
+    3389: 3389,    # RDP (no conflict - OpenWrt doesn't typically run RDP)
 }
 # Port forwarding will use device's LAN IP (192.168.1.x)
 # Access from WAN: gateway_wan_ip:gateway_port → device:device_port
-# NOTE: Using standard ports (80, 443, 23, 22) for corporate firewall compatibility
+#
+# Access examples:
+#   Device HTTP:  curl http://gateway_wan_ip:8080  → Device:80
+#   Device SSH:   ssh -p 2222 user@gateway_wan_ip  → Device:22
+#   Device Telnet: telnet gateway_wan_ip 2323      → Device:23
+#   OpenWrt HTTP:  curl http://gateway_wan_ip:80   → OpenWrt LuCI (gateway itself)
+#   OpenWrt SSH:   ssh -p 22 root@gateway_wan_ip   → OpenWrt SSH (gateway itself)
 
 # IPv6→IPv4 Proxying (for IPv4-only devices)
 # Proxy IPv6 client connections to IPv4 backend devices
 ENABLE_IPV6_TO_IPV4_PROXY = True   # Enable IPv6→IPv4 proxying
+
+# IPv6→IPv4 Proxy Port Mapping
+# IMPORTANT: Only ports allowed by the upstream firewall!
+# The firewall only allows telnet (23) and HTTP (80) for IPv6 traffic.
+# Format: {gateway_ipv6_port: device_port}
+#
+# Note: IPv6 proxying binds to the device's specific IPv6 address
+# Example: [2001:db8::1234]:80 → 192.168.1.100:80
+IPV6_PROXY_PORT_FORWARDS = {
+    80: 80,        # HTTP only (firewall allows this)
+    23: 23,        # Telnet only (firewall allows this)
+    # HTTPS (443), SSH (22), VNC, RDP NOT included - firewall blocks them!
+}
+# Access examples:
+#   Device HTTP via IPv6:   curl http://[device_ipv6]:80
+#   Device Telnet via IPv6: telnet device_ipv6 23
 
 # Proxy backend selection: "socat" or "haproxy"
 # - socat: Lightweight, simple TCP proxy with excellent error messages (recommended for debugging)
@@ -199,6 +227,26 @@ def _find_command(preferred_path: str) -> str:
 
 def validate_config() -> bool:
     """Validate configuration and ensure required paths/commands exist."""
+    # CRITICAL FIX: Validate configuration values to prevent out-of-bounds settings
+    # Check numeric ranges for critical parameters
+    if not (1 <= MAX_DEVICES <= 10000):
+        raise ValueError(f"MAX_DEVICES must be between 1 and 10000, got {MAX_DEVICES}")
+
+    if not (1 <= DHCPV4_TIMEOUT <= 120):
+        raise ValueError(f"DHCPV4_TIMEOUT must be between 1 and 120 seconds, got {DHCPV4_TIMEOUT}")
+
+    if not (1 <= DHCPV6_TIMEOUT <= 120):
+        raise ValueError(f"DHCPV6_TIMEOUT must be between 1 and 120 seconds, got {DHCPV6_TIMEOUT}")
+
+    if not (1 <= DHCPV4_RETRY_COUNT <= 20):
+        raise ValueError(f"DHCPV4_RETRY_COUNT must be between 1 and 20, got {DHCPV4_RETRY_COUNT}")
+
+    if not (1 <= DHCPV6_RETRY_COUNT <= 20):
+        raise ValueError(f"DHCPV6_RETRY_COUNT must be between 1 and 20, got {DHCPV6_RETRY_COUNT}")
+
+    if not (1 <= ARP_MONITOR_INTERVAL <= 300):
+        raise ValueError(f"ARP_MONITOR_INTERVAL must be between 1 and 300 seconds, got {ARP_MONITOR_INTERVAL}")
+
     # Create required directories
     for path in PATHS_TO_CREATE:
         Path(path).mkdir(parents=True, exist_ok=True)
