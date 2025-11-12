@@ -84,15 +84,16 @@ MAX_DEVICES = 1000
 # Format: {gateway_port: device_port}
 ENABLE_AUTO_PORT_FORWARDING = True
 AUTO_PORT_FORWARDS = {
-    8080: 80,      # HTTP
-    2323: 23,      # Telnet
-    8443: 443,     # HTTPS
-    2222: 22,      # SSH
+    80: 80,        # HTTP (direct - no translation, Meta allows port 80)
+    23: 23,        # Telnet (direct - standard port)
+    443: 443,      # HTTPS (direct - no translation, Meta allows port 443)
+    22: 22,        # SSH (direct - standard port)
     5900: 5900,    # VNC
     3389: 3389,    # RDP
 }
 # Port forwarding will use device's LAN IP (192.168.1.x)
 # Access from WAN: gateway_wan_ip:gateway_port → device:device_port
+# NOTE: Using standard ports (80, 443, 23, 22) for corporate firewall compatibility
 
 # IPv6→IPv4 Proxying (for IPv4-only devices)
 # Proxy IPv6 client connections to IPv4 backend devices
