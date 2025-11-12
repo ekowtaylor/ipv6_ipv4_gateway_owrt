@@ -170,7 +170,7 @@ class HAProxyManager:
         lines.append("global")
         lines.append("    log stdout local0 " + cfg.HAPROXY_LOG_LEVEL)
         lines.append("    maxconn 2048")
-        lines.append("    daemon")
+        lines.append("    # daemon mode disabled - managed by our service")
         lines.append("")
 
         # Defaults section
