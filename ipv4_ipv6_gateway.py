@@ -888,6 +888,120 @@ class FirewallManager:
             self.logger.error(f"Failed to enable forwarding: {e}")
             return False
 
+    def allow_icmp(self) -> bool:
+        """Allow ICMP (ping) traffic - CRITICAL for connectivity testing"""
+        try:
+            # ===== IPv4 ICMP Rules =====
+            # Allow ICMP INPUT (ping to gateway itself)
+            subprocess.run(
+                [cfg.CMD_IPTABLES, "-I", "INPUT", "-p", "icmp", "-j", "ACCEPT"],
+                check=False,  # Don't fail if rule exists
+                capture_output=True,
+            )
+
+            # Allow ICMP FORWARD (ping through gateway)
+            subprocess.run(
+                [cfg.CMD_IPTABLES, "-I", "FORWARD", "-p", "icmp", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+
+            # ===== IPv6 ICMPv6 Rules =====
+            # CRITICAL: IPv6 requires specific ICMPv6 types for Neighbor Discovery Protocol (NDP)
+            # Without these, IPv6 routing and address resolution will fail!
+
+            # ICMPv6 Type 128: Echo Request (ping)
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "128", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "FORWARD", "-p", "ipv6-icmp", "--icmpv6-type", "128", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+
+            # ICMPv6 Type 129: Echo Reply (ping response)
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "129", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "FORWARD", "-p", "ipv6-icmp", "--icmpv6-type", "129", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+
+            # ICMPv6 Type 133: Router Solicitation (ESSENTIAL for SLAAC)
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "133", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+
+            # ICMPv6 Type 134: Router Advertisement (ESSENTIAL for SLAAC)
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "134", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+
+            # ICMPv6 Type 135: Neighbor Solicitation (ESSENTIAL for NDP/address resolution)
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "135", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "FORWARD", "-p", "ipv6-icmp", "--icmpv6-type", "135", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+
+            # ICMPv6 Type 136: Neighbor Advertisement (ESSENTIAL for NDP/address resolution)
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "136", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "FORWARD", "-p", "ipv6-icmp", "--icmpv6-type", "136", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+
+            # ICMPv6 Type 137: Redirect Message
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "137", "-j", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+
+            # Also set default IPv6 policy to ACCEPT (critical!)
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-P", "INPUT", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-P", "FORWARD", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_IP6TABLES, "-P", "OUTPUT", "ACCEPT"],
+                check=False,
+                capture_output=True,
+            )
+
+            self.logger.info("ICMP/ICMPv6 traffic allowed (ping enabled with NDP support)")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to enable ICMP: {e}")
+            return False
+
     def add_iptables_rule(self, rule_spec: List[str]) -> bool:
         """Add an iptables rule"""
         try:
@@ -1392,6 +1506,10 @@ class GatewayService:
         if cfg.ENABLE_FORWARDING:
             if not self.firewall.enable_forwarding():
                 self.logger.error("Failed to enable forwarding")
+                return False
+            # CRITICAL: Allow ICMP (ping) traffic for connectivity testing
+            if not self.firewall.allow_icmp():
+                self.logger.error("Failed to enable ICMP")
                 return False
             if not self.firewall.allow_eth0_to_eth1(
                 cfg.ETH0_INTERFACE, cfg.ETH1_INTERFACE
