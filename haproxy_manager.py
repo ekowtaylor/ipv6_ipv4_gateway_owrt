@@ -255,60 +255,104 @@ class HAProxyManager:
                 self.logger.error(f"HAProxy config test failed: {test_result.stderr}")
                 return False
 
-            # Try to reload using init script (graceful reload)
-            reload_result = subprocess.run(
-                ["/etc/init.d/haproxy", "reload"],
-                capture_output=True,
-                timeout=5
-            )
+            # Wait for IPv6 DAD (Duplicate Address Detection) to complete
+            # This ensures IPv6 addresses are fully usable before binding
+            self.logger.info("Waiting 3 seconds for IPv6 DAD to complete...")
+            time.sleep(3)
 
-            if reload_result.returncode == 0:
-                self.logger.info("HAProxy reloaded successfully")
-                return True
+            # Kill any existing HAProxy processes first
+            self._kill_all_haproxy_processes()
 
-            # If reload failed, try restart
-            self.logger.warning("HAProxy reload failed, attempting restart")
-            restart_result = subprocess.run(
-                ["/etc/init.d/haproxy", "restart"],
-                capture_output=True,
-                timeout=10
-            )
+            # Start HAProxy directly with output capture
+            self.logger.info("Starting HAProxy with configuration...")
 
-            if restart_result.returncode == 0:
-                self.logger.info("HAProxy restarted successfully")
-                return True
-
-            # Last resort: start haproxy directly
-            self.logger.warning("HAProxy service management failed, starting directly")
-
-            # Kill previous process if it exists
-            if hasattr(self, 'haproxy_process') and self.haproxy_process and self.haproxy_process.poll() is None:
-                self.logger.warning("Terminating previous HAProxy process...")
-                self.haproxy_process.terminate()
-                try:
-                    self.haproxy_process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    self.logger.error("HAProxy didn't stop gracefully, killing...")
-                    self.haproxy_process.kill()
-                    self.haproxy_process.wait()
+            # Open log file for HAProxy output
+            log_file = open("/var/log/ipv4-ipv6-gateway.log", "a")
 
             self.haproxy_process = subprocess.Popen(
                 ["haproxy", "-f", self.config_file],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stdout=log_file,
+                stderr=subprocess.STDOUT,  # Merge stderr to stdout to catch bind errors
+                start_new_session=True  # Detach from parent
             )
 
-            time.sleep(1)
-            if self.haproxy_process.poll() is None:
-                self.logger.info("HAProxy started directly")
-                return True
+            # Wait a moment and check if it's still running
+            time.sleep(2)
 
-            self.logger.error("Failed to start HAProxy")
-            return False
+            if self.haproxy_process.poll() is not None:
+                self.logger.error(f"HAProxy failed to start (exit code: {self.haproxy_process.returncode})")
+                self.logger.error("Check /var/log/ipv4-ipv6-gateway.log for HAProxy errors")
+                return False
+
+            # Verify HAProxy is actually listening on the configured ports
+            if not self._verify_haproxy_listening():
+                self.logger.error("HAProxy started but is not listening on configured ports")
+                self.logger.error("This usually means bind failed - check logs for 'Cannot bind' errors")
+                return False
+
+            self.logger.info(f"HAProxy started successfully (PID: {self.haproxy_process.pid})")
+            return True
 
         except Exception as e:
             self.logger.error(f"Failed to reload HAProxy: {e}")
             return False
+
+    def _kill_all_haproxy_processes(self) -> None:
+        """Kill all existing HAProxy processes"""
+        try:
+            # Find all haproxy processes
+            result = subprocess.run(
+                ["ps", "-w"],
+                capture_output=True,
+                text=True
+            )
+
+            for line in result.stdout.splitlines():
+                if "haproxy" in line and "grep" not in line:
+                    # Extract PID (first column)
+                    parts = line.split()
+                    if parts:
+                        try:
+                            pid = int(parts[0])
+                            self.logger.info(f"Killing existing HAProxy process (PID: {pid})")
+                            subprocess.run(["kill", str(pid)], timeout=2)
+                        except (ValueError, subprocess.TimeoutExpired):
+                            pass
+
+            # Give processes time to die
+            time.sleep(1)
+
+        except Exception as e:
+            self.logger.warning(f"Error killing HAProxy processes: {e}")
+
+    def _verify_haproxy_listening(self) -> bool:
+        """Verify HAProxy is listening on configured ports"""
+        try:
+            # Get all listening ports from netstat
+            result = subprocess.run(
+                ["netstat", "-tlnp"],
+                capture_output=True,
+                text=True
+            )
+
+            # Check if haproxy is in the output
+            haproxy_lines = [line for line in result.stdout.splitlines() if "haproxy" in line]
+
+            if not haproxy_lines:
+                self.logger.warning("HAProxy process exists but no listening sockets found")
+                return False
+
+            # Log what ports HAProxy is listening on
+            self.logger.info("HAProxy listening sockets:")
+            for line in haproxy_lines:
+                self.logger.info(f"  {line.strip()}")
+
+            return True
+
+        except Exception as e:
+            self.logger.warning(f"Could not verify HAProxy listening status: {e}")
+            # Don't fail if we can't verify - process is running
+            return True
 
     def _is_haproxy_running(self) -> bool:
         """Check if HAProxy is running"""

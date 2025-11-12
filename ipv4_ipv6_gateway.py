@@ -1456,6 +1456,18 @@ class GatewayService:
                     if device and ipv6:
                         device.ipv6_address = ipv6
                         self.logger.info(f"Device {mac} → WAN IPv6: {ipv6}")
+
+                        # Verify IPv6 is actually configured on eth0
+                        self.logger.info(f"Verifying IPv6 {ipv6} is configured on eth0...")
+                        ipv6_addresses_on_eth0 = self.eth0.get_ipv6_addresses()
+
+                        if ipv6 in ipv6_addresses_on_eth0:
+                            self.logger.info(f"✓ Confirmed: IPv6 {ipv6} is present on eth0")
+                        else:
+                            self.logger.warning(f"⚠ WARNING: IPv6 {ipv6} NOT found on eth0!")
+                            self.logger.warning(f"  eth0 IPv6 addresses: {ipv6_addresses_on_eth0}")
+                            self.logger.warning(f"  This will cause HAProxy/socat bind to FAIL!")
+
                     elif device:
                         self.logger.warning(f"Failed to obtain IPv6 for {mac}")
             else:
