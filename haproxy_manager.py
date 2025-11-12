@@ -168,9 +168,10 @@ class HAProxyManager:
 
         # Global section
         lines.append("global")
-        lines.append("    log stdout local0 " + cfg.HAPROXY_LOG_LEVEL)
+        lines.append("    log stdout local0 debug")
         lines.append("    maxconn 2048")
         lines.append("    # daemon mode disabled - managed by our service")
+        lines.append("    # Debug mode enabled for detailed connection logging")
         lines.append("")
 
         # Defaults section
@@ -178,9 +179,9 @@ class HAProxyManager:
         lines.append("    mode tcp")
         lines.append("    log global")
         lines.append("    option tcplog")
-        lines.append("    option dontlognull")
-        lines.append("    # Enhanced logging - log every connection")
-        lines.append("    log-format \"%ci:%cp [%t] %ft %b/%s %Tw/%Tc/%Tt %B %ts %ac/%fc/%bc/%sc/%rc %sq/%bq\"")
+        lines.append("    # Log everything - including null connections")
+        lines.append("    # Enhanced logging with detailed connection info")
+        lines.append("    log-format \"HAPROXY[%pid]: Client=%ci:%cp Frontend=%ft Backend=%b/%s ConnTime=%Tc/%Tw/%Tt Bytes=%B Status=%ts Counters=%ac/%fc/%bc/%sc/%rc Queues=%sq/%bq\"")
         lines.append("    timeout connect 5000ms")
         lines.append("    timeout client 50000ms")
         lines.append("    timeout server 50000ms")
