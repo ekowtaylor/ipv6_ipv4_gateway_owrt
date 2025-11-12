@@ -138,6 +138,72 @@ if command -v opkg >/dev/null 2>&1; then
 
     echo -e "${GREEN}✓ Package installation completed${NC}"
     echo -e "${BLUE}Note: Some warnings above are normal if packages are already installed.${NC}"
+
+    # Verify critical proxy backends (HAProxy or socat)
+    echo ""
+    echo -e "${YELLOW}Verifying IPv6→IPv4 proxy backends...${NC}"
+
+    HAPROXY_OK=false
+    SOCAT_OK=false
+
+    # Check HAProxy
+    if command -v haproxy >/dev/null 2>&1; then
+        echo -e "${BLUE}Checking HAProxy...${NC}"
+        if haproxy -v >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ HAProxy installed and working (version: $(haproxy -v 2>&1 | head -1))${NC}"
+            HAPROXY_OK=true
+        else
+            echo -e "${YELLOW}⚠ HAProxy binary found but may be broken${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ HAProxy not installed${NC}"
+    fi
+
+    # Check socat
+    if command -v socat >/dev/null 2>&1; then
+        echo -e "${BLUE}Checking socat...${NC}"
+        if socat -V >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ socat installed and working (version: $(socat -V 2>&1 | head -1))${NC}"
+            SOCAT_OK=true
+        else
+            echo -e "${YELLOW}⚠ socat binary found but may be broken${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ socat not installed${NC}"
+    fi
+
+    # Ensure at least one proxy backend is available
+    if [ "$HAPROXY_OK" = false ] && [ "$SOCAT_OK" = false ]; then
+        echo -e "${RED}========================================${NC}"
+        echo -e "${RED}ERROR: No proxy backend available!${NC}"
+        echo -e "${RED}========================================${NC}"
+        echo -e "${YELLOW}IPv6→IPv4 proxying requires either HAProxy or socat.${NC}"
+        echo -e "${YELLOW}Try manually installing:${NC}"
+        echo "  opkg update"
+        echo "  opkg install haproxy"
+        echo "  # OR"
+        echo "  opkg install socat"
+        echo ""
+        echo -e "${YELLOW}You can continue installation, but IPv6→IPv4 proxying will NOT work.${NC}"
+        read -p "Continue anyway? (y/n) " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Installation cancelled."
+            exit 1
+        fi
+    fi
+
+    # Recommend HAProxy if both available
+    if [ "$HAPROXY_OK" = true ] && [ "$SOCAT_OK" = true ]; then
+        echo -e "${GREEN}✓ Both HAProxy and socat available (will use HAProxy by default)${NC}"
+    elif [ "$HAPROXY_OK" = true ]; then
+        echo -e "${GREEN}✓ HAProxy available (recommended for production)${NC}"
+    elif [ "$SOCAT_OK" = true ]; then
+        echo -e "${YELLOW}⚠ Only socat available (lightweight but less robust)${NC}"
+        echo -e "${YELLOW}  Consider installing HAProxy for better reliability:${NC}"
+        echo "  opkg install haproxy"
+    fi
+
 else
     echo -e "${YELLOW}opkg not found; assuming non-OpenWrt system.${NC}"
     echo -e "${YELLOW}Please ensure these packages are installed:${NC}"
