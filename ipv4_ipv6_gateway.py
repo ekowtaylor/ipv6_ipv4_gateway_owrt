@@ -1111,10 +1111,13 @@ class SocatProxyManager:
             gateway_lan_ip = "192.168.1.1"  # Gateway's eth1 IP
 
             # BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
+            # CRITICAL FIX: socat IPv6 bind syntax - NO brackets in bind parameter!
+            # Correct:   TCP6-LISTEN:80,bind=2620:10d:c050:100::1,fork
+            # Incorrect: TCP6-LISTEN:80,bind=[2620:10d:c050:100::1],fork (brackets cause failure!)
             socat_cmd = [
                 cfg.CMD_SOCAT,
                 *verbose_flags,
-                f"TCP6-LISTEN:{gateway_port},bind=[{device_ipv6}],fork,reuseaddr",
+                f"TCP6-LISTEN:{gateway_port},bind={device_ipv6},fork,reuseaddr",
                 f"TCP4:{device_ipv4}:{device_port},bind={gateway_lan_ip}"
             ]
 
