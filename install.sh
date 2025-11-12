@@ -508,13 +508,14 @@ EOF
 
 echo -e "${GREEN}✓ DHCP configuration created at $CONFIG_DIR/dhcp-config.uci${NC}\n"
 
-# Step 6.5: Create firewall configuration
+# Step 6.5: Create firewall configuration and enable IPv6 traffic
 echo -e "${YELLOW}Step 6.5: Creating firewall configuration...${NC}"
 cat > "$CONFIG_DIR/firewall-config.uci" << 'EOF'
 package firewall
 
 # Firewall configuration for dual-stack gateway
 # Allows forwarding between LAN (eth1) and WAN (eth0)
+# Enables IPv6 TCP traffic for HAProxy proxying
 
 config defaults
 	option input 'ACCEPT'
@@ -533,9 +534,9 @@ config zone
 	option name 'wan'
 	list network 'wan'
 	list network 'wan6'
-	option input 'REJECT'
+	option input 'ACCEPT'
 	option output 'ACCEPT'
-	option forward 'REJECT'
+	option forward 'ACCEPT'
 	option masq '1'
 	option mtu_fix '1'
 
@@ -558,9 +559,46 @@ config rule
 	option dest_port '546'
 	option target 'ACCEPT'
 	option family 'ipv6'
+
+config rule
+	option name 'Allow-ICMPv6'
+	option src 'wan'
+	option proto 'icmp'
+	option icmp_type 'echo-request'
+	option family 'ipv6'
+	option target 'ACCEPT'
+
+config rule
+	option name 'Allow-IPv6-TCP-Proxy'
+	option src 'wan'
+	option proto 'tcp'
+	option family 'ipv6'
+	option target 'ACCEPT'
 EOF
 
-echo -e "${GREEN}✓ Firewall configuration created at $CONFIG_DIR/firewall-config.uci${NC}\n"
+echo -e "${GREEN}✓ Firewall configuration created at $CONFIG_DIR/firewall-config.uci${NC}"
+
+# Immediately enable IPv6 TCP traffic with ip6tables (if available)
+echo -e "${YELLOW}Enabling IPv6 TCP traffic with ip6tables...${NC}"
+if command -v ip6tables >/dev/null 2>&1; then
+    # Allow incoming IPv6 TCP connections
+    ip6tables -I INPUT -p tcp -j ACCEPT 2>/dev/null || echo -e "${YELLOW}⚠ Could not add ip6tables INPUT rule${NC}"
+
+    # Allow forwarding IPv6 TCP
+    ip6tables -I FORWARD -p tcp -j ACCEPT 2>/dev/null || echo -e "${YELLOW}⚠ Could not add ip6tables FORWARD rule${NC}"
+
+    # Allow established/related connections
+    ip6tables -I INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || echo -e "${YELLOW}⚠ Could not add ip6tables state rule${NC}"
+
+    # Allow ICMPv6 (ping, neighbor discovery, etc.)
+    ip6tables -I INPUT -p ipv6-icmp -j ACCEPT 2>/dev/null || echo -e "${YELLOW}⚠ Could not add ip6tables ICMPv6 rule${NC}"
+
+    echo -e "${GREEN}✓ IPv6 firewall rules added with ip6tables${NC}"
+else
+    echo -e "${YELLOW}⚠ ip6tables not found - IPv6 firewall rules not added${NC}"
+    echo -e "${YELLOW}  Apply firewall config manually: uci import firewall < $CONFIG_DIR/firewall-config.uci${NC}"
+fi
+echo ""
 
 # Step 7: Create sample override configuration
 echo -e "${YELLOW}Step 7: Creating sample override configuration...${NC}"
