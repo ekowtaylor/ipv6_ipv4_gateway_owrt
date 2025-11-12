@@ -483,6 +483,25 @@ class DHCPv6Manager:
                         self.logger.info(f"✓ Enabled Proxy NDP for {obtained_ipv6}")
                     else:
                         self.logger.warning(f"⚠ Failed to enable Proxy NDP for {obtained_ipv6}")
+
+                    # CRITICAL: Wait for kernel to fully initialize the IPv6 address
+                    # Give the kernel time to complete DAD (Duplicate Address Detection)
+                    # and make the address available for binding
+                    self.logger.info(f"Waiting for IPv6 address to be fully ready for binding...")
+                    time.sleep(3)  # Wait for DAD to complete
+
+                    # Verify the address is actually present and usable
+                    max_verify_attempts = 5
+                    for attempt in range(max_verify_attempts):
+                        if self._verify_ipv6_present(obtained_ipv6):
+                            self.logger.info(f"✓ Confirmed: IPv6 {obtained_ipv6} is present and ready on {self.interface}")
+                            break
+                        else:
+                            if attempt < max_verify_attempts - 1:
+                                self.logger.warning(f"IPv6 {obtained_ipv6} not yet ready, waiting... (attempt {attempt + 1}/{max_verify_attempts})")
+                                time.sleep(2)
+                            else:
+                                self.logger.error(f"✗ IPv6 {obtained_ipv6} still not ready after {max_verify_attempts} attempts")
                 else:
                     self.logger.error(f"✗ Failed to configure IPv6 {obtained_ipv6} on {self.interface}")
 
