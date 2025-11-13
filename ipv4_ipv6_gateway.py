@@ -135,6 +135,20 @@ class NetworkInterface:
             self.logger.error(f"Failed to bring up interface: {e}")
             return False
 
+    def bring_down(self) -> bool:
+        """Bring interface down"""
+        try:
+            subprocess.run(
+                [cfg.CMD_IP, "link", "set", self.interface_name, "down"],
+                check=True,
+                capture_output=True,
+            )
+            self.logger.info(f"Brought {self.interface_name} down")
+            return True
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to bring down interface: {e}")
+            return False
+
     def get_ipv6_addresses(self) -> List[str]:
         """Get all non-link-local IPv6 addresses on interface"""
         try:
@@ -412,7 +426,11 @@ class DHCPv6Manager:
             try:
                 # Enable Router Solicitation on interface
                 subprocess.run(
-                    [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.router_solicitations=3"],
+                    [
+                        cfg.CMD_SYSCTL,
+                        "-w",
+                        f"net.ipv6.conf.{self.interface}.router_solicitations=3",
+                    ],
                     check=True,
                     capture_output=True,
                 )
@@ -869,8 +887,16 @@ class DHCPv4Manager:
             self.logger.error(f"Exception during DHCPv4 request: {e}")
             return None
         finally:
-            if original_mac:
-                self.iface.set_mac_address(original_mac)
+            # CRITICAL FOR MAC-AUTHENTICATED NETWORKS:
+            # DO NOT restore original MAC! We must keep the device's MAC address
+            # because the network only allows authenticated MACs (802.1X or MAC filtering).
+            # The gateway's original MAC is not authorized, so traffic would be blocked.
+            # MAC is set PERMANENTLY and only restored during uninstall.
+            if original_mac and mac != original_mac:
+                self.logger.debug(
+                    f"Keeping device MAC {mac} (not restoring {original_mac}) - "
+                    f"permanent MAC spoofing for network authentication"
+                )
 
     def _request_dhcpv4(self) -> bool:
         """Execute DHCPv4 request using udhcpc (busybox DHCP client)"""
@@ -1525,18 +1551,48 @@ class SocatProxyManager:
 
 
 class WANMonitor:
-    """Monitors WAN interface for network changes"""
+    """
+    Monitors WAN interface for both MAC tampering AND IP address changes.
+
+    With permanent MAC spoofing, we need to handle two distinct scenarios:
+
+    1. MAC TAMPERING (OpenWrt services reset MAC):
+       - Restore MAC immediately
+       - Don't trigger rediscovery (MAC is permanent, IPs will come back)
+
+    2. IP ADDRESS CHANGES (router reboot, DHCP renewal, ISP changes):
+       - Keep MAC permanent (don't change it!)
+       - Trigger rediscovery to get new IPs and restart proxies
+
+    This dual approach ensures both protection and proper operation.
+    """
 
     def __init__(self, interface: str):
         self.interface = interface
         self.logger = logging.getLogger("WANMonitor")
         self.iface = NetworkInterface(interface)
+
+        # MAC protection
+        self.expected_mac: Optional[str] = None  # The MAC we should maintain
+        self.last_mac_restore_time: Optional[float] = None  # Track last MAC restoration
+        self.mac_restore_cooldown = 5  # Wait 5s between MAC restores (prevents loop)
+
+        # IP change detection
         self.last_ipv4: Optional[List[str]] = None
         self.last_ipv6: Optional[List[str]] = None
-        self.last_change_time: Optional[float] = None  # Track when last change occurred
-        self.cooldown_seconds = (
-            30  # Minimum time between detecting changes (prevents loop)
+        self.last_ip_change_time: Optional[float] = None
+        self.ip_change_cooldown = (
+            30  # Wait 30s between IP change triggers (prevents loop)
         )
+
+    def set_expected_mac(self, mac: str) -> None:
+        """
+        Set the expected MAC address that should be maintained on WAN interface.
+        This is called after setting device MAC to prevent OpenWrt services from changing it.
+        """
+        self.expected_mac = mac.lower()
+        self.last_mac = mac.lower()
+        self.logger.info(f"WAN monitor will maintain MAC: {self.expected_mac}")
 
     def get_current_addresses(self) -> tuple:
         """Get current IPv4 and IPv6 addresses on WAN interface"""
@@ -1544,14 +1600,93 @@ class WANMonitor:
         ipv6_addrs = self.iface.get_ipv6_addresses()
         return (ipv4_addrs, ipv6_addrs)
 
-    def check_for_changes(self) -> bool:
+    def check_for_mac_tampering(self) -> bool:
         """
-        Check if WAN network has changed.
-        Returns True if network changed, False otherwise.
+        Check if WAN MAC has been tampered with by OpenWrt services.
+        Returns False always (never triggers rediscovery, only restores MAC).
 
-        IMPORTANT: Includes cooldown mechanism to prevent infinite loops!
-        - If a change was detected recently (within cooldown_seconds), ignore transient changes
-        - This prevents the loop: IPv6 appears → triggers reconfiguration → IPv6 cleared → triggers again
+        CRITICAL: With permanent MAC spoofing, we DON'T monitor IP changes!
+        - IP changes are normal network behavior
+        - MAC is permanent until uninstall
+        - Only protect against OpenWrt resetting MAC
+
+        Protects against OpenWrt services (netifd, hotplug scripts) resetting MAC:
+        - Detects if WAN MAC has been changed back to gateway's original MAC
+        - Automatically restores device MAC to prevent breaking network authentication
+        - Includes cooldown to prevent restoration loops
+        """
+        # Check if we have an expected MAC to maintain
+        if not self.expected_mac:
+            return False
+
+        # Check current MAC on interface
+        current_mac = self.iface.get_mac_address()
+        if not current_mac:
+            return False
+
+        # MAC is correct, nothing to do
+        if current_mac.lower() == self.expected_mac:
+            return False
+
+        # MAC has been changed! Check cooldown to prevent loops
+        current_time = time.time()
+        if self.last_mac_restore_time is not None:
+            time_since_last_restore = current_time - self.last_mac_restore_time
+            if time_since_last_restore < self.mac_restore_cooldown:
+                # Within cooldown - don't restore again (prevents loop)
+                self.logger.debug(
+                    f"MAC change detected but in cooldown period "
+                    f"({time_since_last_restore:.1f}s < {self.mac_restore_cooldown}s)"
+                )
+                return False
+
+        # MAC changed and outside cooldown - restore it!
+        self.logger.error(
+            f"⚠️ WAN MAC ADDRESS CHANGED! Expected {self.expected_mac}, found {current_mac}"
+        )
+        self.logger.error(
+            f"⚠️ This suggests OpenWrt service (netifd/hotplug) reset the MAC!"
+        )
+
+        # Immediately restore the expected MAC
+        self.logger.warning(f"🔧 Restoring correct MAC {self.expected_mac}...")
+        if not self.iface.bring_down():
+            self.logger.error("Failed to bring interface down")
+            return False
+
+        if not self.iface.set_mac_address(self.expected_mac):
+            self.logger.error(
+                f"❌ FAILED to restore MAC! Network authentication may break!"
+            )
+            self.iface.bring_up()  # Try to bring it back up anyway
+            return False
+
+        if not self.iface.bring_up():
+            self.logger.error("Failed to bring interface up after MAC restoration")
+            return False
+
+        self.logger.info(f"✓ Restored WAN MAC to {self.expected_mac}")
+
+        # Track this restoration to prevent loops
+        self.last_mac_restore_time = current_time
+
+        # Wait for network to stabilize after MAC restoration
+        time.sleep(2)
+
+        # NEVER trigger rediscovery - we just fixed the problem
+        # The MAC is permanent, IP addresses will come back on their own
+        return False
+
+    def check_for_ip_changes(self) -> bool:
+        """
+        Check if WAN IP addresses have changed (router reboot, DHCP renewal, etc.).
+        Returns True if IP changed (triggers rediscovery), False otherwise.
+
+        IMPORTANT: With permanent MAC spoofing:
+        - MAC stays permanent (already set on first device)
+        - IP changes ARE legitimate (router reboot, DHCP lease renewal, ISP changes)
+        - When IPs change, we need to rediscover addresses and restart proxies
+        - Includes cooldown to prevent loops during DHCP negotiation
         """
         current_ipv4, current_ipv6 = self.get_current_addresses()
 
@@ -1559,26 +1694,27 @@ class WANMonitor:
         if self.last_ipv4 is None and self.last_ipv6 is None:
             self.last_ipv4 = current_ipv4
             self.last_ipv6 = current_ipv6
-            self.last_change_time = None
+            self.last_ip_change_time = None
             self.logger.info(
-                f"WAN monitor initialized - IPv4: {current_ipv4}, IPv6: {current_ipv6}"
+                f"WAN IP monitoring initialized - IPv4: {current_ipv4}, IPv6: {current_ipv6}"
             )
             return False
 
-        # Check for changes
+        # Check for IP address changes
         ipv4_changed = set(current_ipv4) != set(self.last_ipv4 or [])
         ipv6_changed = set(current_ipv6) != set(self.last_ipv6 or [])
 
         if ipv4_changed or ipv6_changed:
             # CRITICAL: Check cooldown to prevent infinite loop
+            # During DHCP renewal, IPs may appear/disappear temporarily
             current_time = time.time()
-            if self.last_change_time is not None:
-                time_since_last_change = current_time - self.last_change_time
+            if self.last_ip_change_time is not None:
+                time_since_last_change = current_time - self.last_ip_change_time
 
-                if time_since_last_change < self.cooldown_seconds:
+                if time_since_last_change < self.ip_change_cooldown:
                     # Within cooldown period - ignore this change (likely transient)
                     self.logger.debug(
-                        f"WAN change detected but ignoring (cooldown: {time_since_last_change:.1f}s < {self.cooldown_seconds}s)"
+                        f"WAN IP change detected but ignoring (cooldown: {time_since_last_change:.1f}s < {self.ip_change_cooldown}s)"
                     )
                     # Update tracking but don't trigger reconfiguration
                     self.last_ipv4 = current_ipv4
@@ -1586,7 +1722,7 @@ class WANMonitor:
                     return False
 
             # Outside cooldown or first change - this is a real network change
-            self.logger.warning("WAN network change detected!")
+            self.logger.warning("🌐 WAN IP address change detected!")
             if ipv4_changed:
                 self.logger.warning(
                     f"  IPv4 changed: {self.last_ipv4} → {current_ipv4}"
@@ -1599,7 +1735,12 @@ class WANMonitor:
             # Update last known addresses and change time
             self.last_ipv4 = current_ipv4
             self.last_ipv6 = current_ipv6
-            self.last_change_time = current_time
+            self.last_ip_change_time = current_time
+
+            # IMPORTANT: MAC stays permanent! Only IPs change
+            self.logger.info(
+                "Note: Device MAC remains permanent - only rediscovering IP addresses"
+            )
 
             return True
 
@@ -1647,6 +1788,87 @@ class GatewayService:
         self.discovery_thread: Optional[threading.Thread] = None
         self.monitor_thread: Optional[threading.Thread] = None
         self.wan_monitor_thread: Optional[threading.Thread] = None
+
+        # Track whether WAN has been initialized (brought up with device MAC)
+        self.wan_initialized = False
+        self.wan_init_lock = threading.Lock()
+
+    def _save_original_wan_mac(self, mac: str) -> bool:
+        """
+        Save the original WAN interface MAC address to file.
+        This MAC will be restored during uninstall.
+
+        Args:
+            mac: Original MAC address to save
+
+        Returns:
+            True if saved successfully
+        """
+        try:
+            os.makedirs(os.path.dirname(cfg.ORIGINAL_MAC_FILE), exist_ok=True)
+            with open(cfg.ORIGINAL_MAC_FILE, "w") as f:
+                f.write(mac)
+            self.logger.info(f"Saved original WAN MAC {mac} to {cfg.ORIGINAL_MAC_FILE}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to save original WAN MAC: {e}")
+            return False
+
+    def _load_original_wan_mac(self) -> Optional[str]:
+        """
+        Load the original WAN interface MAC address from file.
+
+        Returns:
+            Original MAC address or None if not found
+        """
+        try:
+            if os.path.exists(cfg.ORIGINAL_MAC_FILE):
+                with open(cfg.ORIGINAL_MAC_FILE, "r") as f:
+                    mac = f.read().strip()
+                self.logger.info(
+                    f"Loaded original WAN MAC {mac} from {cfg.ORIGINAL_MAC_FILE}"
+                )
+                return mac
+        except Exception as e:
+            self.logger.error(f"Failed to load original WAN MAC: {e}")
+        return None
+
+    def restore_original_wan_mac(self) -> bool:
+        """
+        Restore the WAN interface to its original MAC address.
+        Called during uninstall to restore gateway to factory state.
+
+        Returns:
+            True if restored successfully
+        """
+        original_mac = self._load_original_wan_mac()
+        if not original_mac:
+            self.logger.warning("No original WAN MAC found to restore")
+            return False
+
+        self.logger.info(f"Restoring WAN interface to original MAC {original_mac}")
+
+        # Bring down interface before changing MAC
+        self.eth0.bring_down()
+
+        # Set original MAC
+        if not self.eth0.set_mac_address(original_mac):
+            self.logger.error(f"Failed to restore original MAC {original_mac}")
+            return False
+
+        # Bring interface back up
+        self.eth0.bring_up()
+
+        # Delete the original MAC file (cleanup)
+        try:
+            if os.path.exists(cfg.ORIGINAL_MAC_FILE):
+                os.remove(cfg.ORIGINAL_MAC_FILE)
+                self.logger.info(f"Removed {cfg.ORIGINAL_MAC_FILE}")
+        except Exception as e:
+            self.logger.warning(f"Failed to remove {cfg.ORIGINAL_MAC_FILE}: {e}")
+
+        self.logger.info(f"✓ WAN interface restored to original MAC {original_mac}")
+        return True
 
     def should_attempt_protocols(self) -> tuple:
         """
@@ -1795,6 +2017,7 @@ class GatewayService:
         self.devices = self.device_store.load_devices()
         self.logger.info("Loaded %d existing device mappings", len(self.devices))
 
+        # Bring up network interfaces
         if not self.eth0.is_up():
             self.logger.info("Bringing %s up...", cfg.ETH0_INTERFACE)
             self.eth0.bring_up()
@@ -2002,6 +2225,9 @@ class GatewayService:
         """
         Discover WAN addresses (IPv4 and/or IPv6) for a specific MAC address.
         Requests DHCPv4 and/or DHCPv6 based on what protocols are available on eth0.
+
+        IMPORTANT: On first device discovery, saves gateway's original MAC and sets
+        device MAC permanently on WAN interface. Original MAC is only restored during uninstall.
         """
         try:
             with self._devices_lock:
@@ -2009,6 +2235,47 @@ class GatewayService:
                 if not device:
                     return
                 device.status = "discovering"
+
+            # CRITICAL: Save original WAN MAC and set device MAC permanently
+            with self.wan_init_lock:
+                if not self.wan_initialized:
+                    self.logger.warning(
+                        f"🌐 FIRST DEVICE DETECTED! Setting permanent MAC {mac} on WAN interface"
+                    )
+
+                    # Get and save original gateway MAC
+                    original_mac = self.eth0.get_mac_address()
+                    if original_mac and original_mac != mac:
+                        if not self._save_original_wan_mac(original_mac):
+                            self.logger.error("Failed to save original WAN MAC!")
+                        else:
+                            self.logger.info(f"✓ Saved original WAN MAC {original_mac}")
+
+                    # Set device MAC permanently (will be kept until uninstall)
+                    if not self.eth0.set_mac_address(mac):
+                        self.logger.error(
+                            f"❌ CRITICAL: Failed to set WAN MAC to {mac}!"
+                        )
+                        with self._devices_lock:
+                            if mac in self.devices:
+                                self.devices[mac].status = "failed"
+                        return
+
+                    self.wan_initialized = True
+                    self.logger.warning(
+                        f"✓ WAN interface permanently using device MAC {mac}"
+                    )
+                    self.logger.warning(f"✓ Gateway's own MAC is HIDDEN from network")
+                    self.logger.warning(
+                        f"✓ Original MAC will be restored during uninstall"
+                    )
+
+                    # Tell WAN monitor to maintain this MAC (prevents OpenWrt from changing it)
+                    if self.wan_monitor:
+                        self.wan_monitor.set_expected_mac(mac)
+                        self.logger.info(
+                            f"✓ WAN monitor will protect MAC {mac} from OpenWrt interference"
+                        )
 
             # Determine which protocols to attempt
             attempt_ipv4, attempt_ipv6 = self.should_attempt_protocols()
@@ -2367,25 +2634,44 @@ class GatewayService:
 
     def _wan_monitoring_loop(self) -> None:
         """
-        Monitor WAN interface for network changes and trigger re-discovery.
-        When WAN network changes (different IP addresses), all devices are
-        re-discovered to obtain new WAN addresses.
+        Monitor WAN interface for both MAC tampering AND IP address changes.
+
+        Two monitoring scenarios with permanent MAC spoofing:
+
+        1. MAC TAMPERING (OpenWrt services reset MAC):
+           - Detected by check_for_mac_tampering()
+           - Automatically restored, does NOT trigger rediscovery
+           - MAC is permanent until uninstall
+
+        2. IP ADDRESS CHANGES (router reboot, DHCP renewal, ISP changes):
+           - Detected by check_for_ip_changes()
+           - MAC stays permanent (not changed!)
+           - DOES trigger rediscovery to update IPs and restart proxies
+
+        This dual approach ensures both protection and proper operation.
         """
-        self.logger.info("WAN monitoring loop started")
+        self.logger.info(
+            "WAN monitoring started (MAC protection + IP change detection)"
+        )
 
         while self.running:
             try:
-                if self.wan_monitor and self.wan_monitor.check_for_changes():
-                    # WAN network changed!
-                    self.logger.warning(
-                        "WAN network changed - triggering device re-discovery"
-                    )
+                if self.wan_monitor:
+                    # Check for MAC tampering first (auto-restores if needed)
+                    self.wan_monitor.check_for_mac_tampering()
 
-                    # Wait a moment for network to stabilize
-                    time.sleep(cfg.WAN_CHANGE_REDISCOVERY_DELAY)
+                    # Then check for IP changes (triggers rediscovery if needed)
+                    if self.wan_monitor.check_for_ip_changes():
+                        # WAN IPs changed - rediscover addresses
+                        self.logger.warning(
+                            "WAN IP addresses changed - triggering device re-discovery"
+                        )
 
-                    # Clear all WAN addresses and trigger re-discovery
-                    self._rediscover_all_devices()
+                        # Wait a moment for network to stabilize
+                        time.sleep(cfg.WAN_CHANGE_REDISCOVERY_DELAY)
+
+                        # Re-discover all devices (MAC stays permanent!)
+                        self._rediscover_all_devices()
 
                 time.sleep(cfg.WAN_MONITOR_INTERVAL)
 

@@ -88,43 +88,74 @@ if [ "$INIT_SYSTEM" = "systemd" ] && [ -f "$SYSTEMD_SERVICE" ]; then
 fi
 
 # CRITICAL: Restore original MAC address on eth0
-# The gateway may have spoofed a device's MAC for network authentication
-# We need to restore the gateway's original MAC before uninstalling
+# The gateway saves its original MAC when first device connects
+# This MAC must be restored during uninstall to return gateway to factory state
 echo -e "${BLUE}- Restoring original MAC address on eth0 (if saved)...${NC}"
 
-# Try to find saved original MAC from device store
-if [ -f "$CONFIG_DIR/devices.json" ]; then
-    # Extract any MAC that was saved before spoofing
-    # The gateway stores its work in devices.json, but original MAC isn't there
-    # So we'll try to get it from the network backup if available
-    echo -e "${BLUE}  Checking for saved original MAC...${NC}"
-fi
+# Check if gateway service saved the original MAC
+if [ -f "$CONFIG_DIR/original_wan_mac.txt" ]; then
+    SAVED_MAC=$(cat "$CONFIG_DIR/original_wan_mac.txt" 2>/dev/null || echo "")
+    if [ -n "$SAVED_MAC" ]; then
+        echo -e "${BLUE}  Found saved original MAC: ${SAVED_MAC}${NC}"
 
-# Check if there's a network interface backup with original MAC
-if [ -f "$CONFIG_DIR/network.original" ]; then
-    echo -e "${BLUE}  Found network backup, checking for MAC info...${NC}"
-fi
+        # Restore using Python API (calls restore_original_wan_mac())
+        if [ -f "$INSTALL_DIR/ipv4_ipv6_gateway.py" ]; then
+            echo -e "${BLUE}  Restoring MAC using gateway service...${NC}"
+            python3 -c "
+import sys
+sys.path.insert(0, '$INSTALL_DIR')
+from ipv4_ipv6_gateway import GatewayService
+service = GatewayService()
+success = service.restore_original_wan_mac()
+sys.exit(0 if success else 1)
+" 2>/dev/null
 
-# Best effort: Try to reset eth0 MAC to a predictable state
-# Option 1: Read from device-tree or system
-if [ -d "/sys/class/net/eth0" ]; then
-    echo -e "${BLUE}  Attempting to restore eth0 MAC address...${NC}"
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}  ✓ Restored original MAC address: ${SAVED_MAC}${NC}"
+            else
+                # Python failed, try manual restore
+                echo -e "${YELLOW}  Python restore failed, trying manual restore...${NC}"
+                ip link set eth0 down 2>/dev/null || true
+                ip link set eth0 address "$SAVED_MAC" 2>/dev/null || true
+                ip link set eth0 up 2>/dev/null || true
 
-    # Try to get permanent MAC address from device
-    if [ -f "/sys/class/net/eth0/address" ]; then
-        CURRENT_MAC=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
-        echo -e "${BLUE}  Current eth0 MAC: ${CURRENT_MAC}${NC}"
+                # Verify
+                NEW_MAC=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
+                if [ "$NEW_MAC" = "$SAVED_MAC" ]; then
+                    echo -e "${GREEN}  ✓ Manually restored MAC address: ${SAVED_MAC}${NC}"
+                else
+                    echo -e "${YELLOW}  ⚠ Failed to restore MAC${NC}"
+                fi
+            fi
+        else
+            # Python service not available, try manual restore
+            echo -e "${BLUE}  Gateway service not available, trying manual restore...${NC}"
+            ip link set eth0 down 2>/dev/null || true
+            ip link set eth0 address "$SAVED_MAC" 2>/dev/null || true
+            ip link set eth0 up 2>/dev/null || true
+
+            # Verify
+            NEW_MAC=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
+            if [ "$NEW_MAC" = "$SAVED_MAC" ]; then
+                echo -e "${GREEN}  ✓ Manually restored MAC address: ${SAVED_MAC}${NC}"
+            else
+                echo -e "${YELLOW}  ⚠ Failed to restore MAC${NC}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}  ⚠ Saved MAC file is empty${NC}"
     fi
+else
+    echo -e "${BLUE}  No saved original MAC found - gateway may not have run yet${NC}"
+    echo -e "${BLUE}  Attempting fallback to hardware MAC...${NC}"
 
-    # Check if there's a permanent address stored
+    # Fallback: Try to get hardware MAC from sysfs
     if [ -f "/sys/class/net/eth0/perm_addr" ]; then
         PERM_MAC=$(cat /sys/class/net/eth0/perm_addr 2>/dev/null || echo "")
         if [ -n "$PERM_MAC" ] && [ "$PERM_MAC" != "00:00:00:00:00:00" ]; then
-            echo -e "${BLUE}  Hardware/Permanent MAC: ${PERM_MAC}${NC}"
-
-            # Only restore if current MAC is different
+            CURRENT_MAC=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
             if [ "$CURRENT_MAC" != "$PERM_MAC" ]; then
-                echo -e "${YELLOW}  Restoring hardware MAC address to eth0...${NC}"
+                echo -e "${BLUE}  Restoring hardware MAC: ${PERM_MAC}${NC}"
                 ip link set eth0 down 2>/dev/null || true
                 ip link set eth0 address "$PERM_MAC" 2>/dev/null || true
                 ip link set eth0 up 2>/dev/null || true
@@ -132,24 +163,19 @@ if [ -d "/sys/class/net/eth0" ]; then
                 # Verify
                 NEW_MAC=$(cat /sys/class/net/eth0/address 2>/dev/null || echo "")
                 if [ "$NEW_MAC" = "$PERM_MAC" ]; then
-                    echo -e "${GREEN}  ✓ Restored hardware MAC address: ${PERM_MAC}${NC}"
+                    echo -e "${GREEN}  ✓ Restored hardware MAC: ${PERM_MAC}${NC}"
                 else
                     echo -e "${YELLOW}  ⚠ Failed to restore MAC (may require reboot)${NC}"
                 fi
             else
-                echo -e "${GREEN}  ✓ eth0 already has hardware MAC address${NC}"
+                echo -e "${GREEN}  ✓ eth0 already has hardware MAC${NC}"
             fi
         else
-            echo -e "${YELLOW}  ⚠ No permanent MAC address found in sysfs${NC}"
-            echo -e "${YELLOW}  ⚠ Manual MAC restoration may be required after uninstall${NC}"
-            echo -e "${YELLOW}  ⚠ Rebooting the gateway will restore the hardware MAC${NC}"
+            echo -e "${YELLOW}  ⚠ No hardware MAC found - reboot recommended${NC}"
         fi
     else
-        echo -e "${YELLOW}  ⚠ /sys/class/net/eth0/perm_addr not available${NC}"
-        echo -e "${YELLOW}  ⚠ Recommend rebooting to restore hardware MAC address${NC}"
+        echo -e "${YELLOW}  ⚠ Cannot determine original MAC - reboot recommended${NC}"
     fi
-else
-    echo -e "${YELLOW}  ⚠ eth0 interface not found in sysfs${NC}"
 fi
 
 # Kill any remaining socat processes (IPv6→IPv4 proxies)

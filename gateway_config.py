@@ -44,11 +44,23 @@ DEVICE_MONITOR_INTERVAL = 30  # seconds - update device status
 # WAN network monitoring (automatic network change detection)
 ENABLE_WAN_MONITOR = True  # Monitor WAN interface for network changes
 WAN_MONITOR_INTERVAL = 15  # seconds - check for WAN IP changes
-WAN_CHANGE_REDISCOVERY_DELAY = 5  # seconds - wait before re-requesting DHCP for all devices
+WAN_CHANGE_REDISCOVERY_DELAY = (
+    5  # seconds - wait before re-requesting DHCP for all devices
+)
+
+# WAN MAC address management
+# IMPORTANT: Gateway permanently uses device MAC on WAN interface
+# - On first device discovery, gateway's original MAC is saved to file
+# - Device's MAC is set on WAN interface and kept permanently
+# - Original MAC is ONLY restored during uninstall
+# - This prevents gateway's own MAC from ever appearing on MAC-filtered networks
 
 # Device storage
 DEVICES_FILE = os.path.join(CONFIG_DIR, "devices.json")
 BACKUP_DEVICES_FILE = os.path.join(CONFIG_DIR, "devices.json.bak")
+
+# Gateway MAC storage (for restoration during uninstall)
+ORIGINAL_MAC_FILE = os.path.join(CONFIG_DIR, "original_wan_mac.txt")
 
 # 464XLAT settings
 ENABLE_464XLAT = True
@@ -90,12 +102,12 @@ MAX_DEVICES = 1  # SINGLE DEVICE MODE: Only one device supported at a time
 # Example: Device's HTTP (port 80) is accessible via gateway's port 8080
 ENABLE_AUTO_PORT_FORWARDING = True
 AUTO_PORT_FORWARDS = {
-    8080: 80,      # HTTP: Gateway:8080 → Device:80 (avoids conflict with OpenWrt's LuCI)
-    2323: 23,      # Telnet: Gateway:2323 → Device:23 (avoids conflict if OpenWrt runs telnet)
-    8443: 443,     # HTTPS: Gateway:8443 → Device:443 (avoids conflict with OpenWrt's LuCI HTTPS)
-    2222: 22,      # SSH: Gateway:2222 → Device:22 (avoids conflict with OpenWrt's SSH/dropbear)
-    5900: 5900,    # VNC (no conflict - OpenWrt doesn't typically run VNC)
-    3389: 3389,    # RDP (no conflict - OpenWrt doesn't typically run RDP)
+    8080: 80,  # HTTP: Gateway:8080 → Device:80 (avoids conflict with OpenWrt's LuCI)
+    2323: 23,  # Telnet: Gateway:2323 → Device:23 (avoids conflict if OpenWrt runs telnet)
+    8443: 443,  # HTTPS: Gateway:8443 → Device:443 (avoids conflict with OpenWrt's LuCI HTTPS)
+    2222: 22,  # SSH: Gateway:2222 → Device:22 (avoids conflict with OpenWrt's SSH/dropbear)
+    5900: 5900,  # VNC (no conflict - OpenWrt doesn't typically run VNC)
+    3389: 3389,  # RDP (no conflict - OpenWrt doesn't typically run RDP)
 }
 # Port forwarding will use device's LAN IP (192.168.1.x)
 # Access from WAN: gateway_wan_ip:gateway_port → device:device_port
@@ -109,7 +121,7 @@ AUTO_PORT_FORWARDS = {
 
 # IPv6→IPv4 Proxying (for IPv4-only devices)
 # Proxy IPv6 client connections to IPv4 backend devices
-ENABLE_IPV6_TO_IPV4_PROXY = True   # Enable IPv6→IPv4 proxying
+ENABLE_IPV6_TO_IPV4_PROXY = True  # Enable IPv6→IPv4 proxying
 
 # IPv6→IPv4 Proxy Port Mapping
 # IMPORTANT: Only ports allowed by the upstream firewall!
@@ -119,8 +131,8 @@ ENABLE_IPV6_TO_IPV4_PROXY = True   # Enable IPv6→IPv4 proxying
 # Note: IPv6 proxying binds to the device's specific IPv6 address
 # Example: [2001:db8::1234]:80 → 192.168.1.100:80
 IPV6_PROXY_PORT_FORWARDS = {
-    80: 80,        # HTTP only (firewall allows this)
-    23: 23,        # Telnet only (firewall allows this)
+    80: 80,  # HTTP only (firewall allows this)
+    23: 23,  # Telnet only (firewall allows this)
     # HTTPS (443), SSH (22), VNC, RDP NOT included - firewall blocks them!
 }
 # Access examples:
@@ -130,18 +142,20 @@ IPV6_PROXY_PORT_FORWARDS = {
 # Proxy backend selection: "socat" or "haproxy"
 # - socat: Lightweight, simple TCP proxy with excellent error messages (recommended for debugging)
 # - haproxy: Production-grade proxy with better protocol handling and logging
-IPV6_PROXY_BACKEND = "socat"       # Options: "socat" or "haproxy" (default: socat)
+IPV6_PROXY_BACKEND = "socat"  # Options: "socat" or "haproxy" (default: socat)
 
 # socat-specific settings
-SOCAT_PROXY_BIND_IPV6 = "::"       # Bind to all IPv6 addresses (:: = any IPv6)
+SOCAT_PROXY_BIND_IPV6 = "::"  # Bind to all IPv6 addresses (:: = any IPv6)
 SOCAT_PROXY_LOG_DIR = "/var/log/socat"  # Directory for socat logs (optional)
 
 # HAProxy-specific settings
 HAPROXY_CONFIG_FILE = "/etc/haproxy/haproxy.cfg"  # HAProxy config file location
-HAPROXY_STATS_ENABLE = True        # Enable HAProxy stats page
-HAPROXY_STATS_PORT = 8404          # Stats page port
-HAPROXY_STATS_URI = "/stats"       # Stats page URI
-HAPROXY_LOG_LEVEL = "info"         # HAProxy log level (emerg, alert, crit, err, warning, notice, info, debug)
+HAPROXY_STATS_ENABLE = True  # Enable HAProxy stats page
+HAPROXY_STATS_PORT = 8404  # Stats page port
+HAPROXY_STATS_URI = "/stats"  # Stats page URI
+HAPROXY_LOG_LEVEL = (
+    "info"  # HAProxy log level (emerg, alert, crit, err, warning, notice, info, debug)
+)
 
 # Debugging
 DEBUG_MODE = False
@@ -233,19 +247,29 @@ def validate_config() -> bool:
         raise ValueError(f"MAX_DEVICES must be between 1 and 10000, got {MAX_DEVICES}")
 
     if not (1 <= DHCPV4_TIMEOUT <= 120):
-        raise ValueError(f"DHCPV4_TIMEOUT must be between 1 and 120 seconds, got {DHCPV4_TIMEOUT}")
+        raise ValueError(
+            f"DHCPV4_TIMEOUT must be between 1 and 120 seconds, got {DHCPV4_TIMEOUT}"
+        )
 
     if not (1 <= DHCPV6_TIMEOUT <= 120):
-        raise ValueError(f"DHCPV6_TIMEOUT must be between 1 and 120 seconds, got {DHCPV6_TIMEOUT}")
+        raise ValueError(
+            f"DHCPV6_TIMEOUT must be between 1 and 120 seconds, got {DHCPV6_TIMEOUT}"
+        )
 
     if not (1 <= DHCPV4_RETRY_COUNT <= 20):
-        raise ValueError(f"DHCPV4_RETRY_COUNT must be between 1 and 20, got {DHCPV4_RETRY_COUNT}")
+        raise ValueError(
+            f"DHCPV4_RETRY_COUNT must be between 1 and 20, got {DHCPV4_RETRY_COUNT}"
+        )
 
     if not (1 <= DHCPV6_RETRY_COUNT <= 20):
-        raise ValueError(f"DHCPV6_RETRY_COUNT must be between 1 and 20, got {DHCPV6_RETRY_COUNT}")
+        raise ValueError(
+            f"DHCPV6_RETRY_COUNT must be between 1 and 20, got {DHCPV6_RETRY_COUNT}"
+        )
 
     if not (1 <= ARP_MONITOR_INTERVAL <= 300):
-        raise ValueError(f"ARP_MONITOR_INTERVAL must be between 1 and 300 seconds, got {ARP_MONITOR_INTERVAL}")
+        raise ValueError(
+            f"ARP_MONITOR_INTERVAL must be between 1 and 300 seconds, got {ARP_MONITOR_INTERVAL}"
+        )
 
     # Create required directories
     for path in PATHS_TO_CREATE:
@@ -299,7 +323,11 @@ def validate_config() -> bool:
     # Warn about optional commands if features are enabled
     for name, path in optional_commands.items():
         if not os.path.exists(path):
-            if name == "socat" and ENABLE_IPV6_TO_IPV4_PROXY and IPV6_PROXY_BACKEND == "socat":
+            if (
+                name == "socat"
+                and ENABLE_IPV6_TO_IPV4_PROXY
+                and IPV6_PROXY_BACKEND == "socat"
+            ):
                 # socat is required if IPv6→IPv4 proxying is enabled with socat backend
                 raise RuntimeError(
                     f"socat command not found (looked for: {path})\n"
