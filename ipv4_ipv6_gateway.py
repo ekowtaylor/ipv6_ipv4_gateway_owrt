@@ -163,21 +163,30 @@ class SimpleGateway:
                 check=True,
             )
 
+            # Debug: Log what we're checking
+            self.logger.debug(f"Checking ARP table for {self.lan_interface}")
+            self.logger.debug(f"ARP output: {result.stdout}")
+
             # Parse ARP output
             # Format: 192.168.1.100 lladdr aa:bb:cc:dd:ee:ff REACHABLE
             for line in result.stdout.splitlines():
                 parts = line.split()
+                self.logger.debug(f"ARP line: {line} -> Parts: {parts}")
+
                 if len(parts) >= 5 and parts[2] == "lladdr":
                     ip = parts[0]
                     mac = parts[3].lower()
 
                     # Skip gateway itself (192.168.1.1)
                     if ip == cfg.LAN_GATEWAY_IP:
+                        self.logger.debug(f"Skipping gateway IP: {ip}")
                         continue
 
                     # Found a device!
+                    self.logger.info(f"Found device in ARP: {mac} at {ip}")
                     return (mac, ip)
 
+            self.logger.debug("No devices found in ARP table")
             return None
 
         except subprocess.CalledProcessError as e:
