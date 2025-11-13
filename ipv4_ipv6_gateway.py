@@ -290,16 +290,30 @@ class SimpleGateway:
         # Step 3: Get IPv6 (SLAAC or DHCPv6)
         wan_ipv6 = self._request_ipv6(mac, fast_mode=fast_reconfig)
         if wan_ipv6:
-            self.device.wan_ipv6 = wan_ipv6
-            self.logger.info(f"Got WAN IPv6 (primary): {wan_ipv6}")
-
-            # Also collect ALL IPv6 addresses (SLAAC, DHCPv6, privacy extensions, etc.)
+            # Collect ALL IPv6 addresses
             all_ipv6 = self._get_all_interface_ipv6(self.wan_interface)
+
             if all_ipv6:
-                self.device.wan_ipv6_all = all_ipv6
-                self.logger.info(
-                    f"All WAN IPv6 addresses ({len(all_ipv6)}): {', '.join(all_ipv6)}"
-                )
+                # Select primary address (prefer SLAAC over DHCPv6)
+                primary_ipv6 = self._select_primary_ipv6(all_ipv6, mac)
+
+                if primary_ipv6:
+                    self.device.wan_ipv6 = primary_ipv6
+                    self.device.wan_ipv6_all = all_ipv6
+
+                    self.logger.info(f"Got WAN IPv6 (primary): {primary_ipv6}")
+                    self.logger.info(
+                        f"All WAN IPv6 addresses ({len(all_ipv6)}): {', '.join(all_ipv6)}"
+                    )
+                else:
+                    # Fallback to first address
+                    self.device.wan_ipv6 = wan_ipv6
+                    self.device.wan_ipv6_all = all_ipv6
+                    self.logger.info(f"Got WAN IPv6: {wan_ipv6}")
+            else:
+                # Only one address found
+                self.device.wan_ipv6 = wan_ipv6
+                self.logger.info(f"Got WAN IPv6: {wan_ipv6}")
 
         # Step 4: Setup port forwarding
         if wan_ipv4:
@@ -528,9 +542,81 @@ class SimpleGateway:
         return None
 
     def _setup_ipv4_port_forwarding(self, lan_ip: str, wan_ip: str):
-        """Setup IPv4 NAT port forwarding"""
-        self.logger.info(f"Setting up IPv4 port forwarding for {lan_ip}")
+        """
+        Setup IPv4 NAT forwarding (TCP ports + ICMP)
+        This makes the WAN IP behave exactly like the device's own IP
+        """
+        self.logger.info(f"Setting up IPv4 forwarding for {lan_ip}")
 
+        # Forward ICMP (ping) to device - makes WAN IP truly transparent
+        try:
+            # Check if ICMP forwarding rule exists
+            check = subprocess.run(
+                [
+                    cfg.CMD_IPTABLES,
+                    "-t",
+                    "nat",
+                    "-C",
+                    "PREROUTING",
+                    "-p",
+                    "icmp",
+                    "-d",
+                    wan_ip,
+                    "-j",
+                    "DNAT",
+                    "--to-destination",
+                    lan_ip,
+                ],
+                capture_output=True,
+            )
+
+            if check.returncode != 0:
+                # Add ICMP DNAT rule (ping requests → device)
+                subprocess.run(
+                    [
+                        cfg.CMD_IPTABLES,
+                        "-t",
+                        "nat",
+                        "-A",
+                        "PREROUTING",
+                        "-p",
+                        "icmp",
+                        "-d",
+                        wan_ip,
+                        "-j",
+                        "DNAT",
+                        "--to-destination",
+                        lan_ip,
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+
+                # Add FORWARD rule for ICMP
+                subprocess.run(
+                    [
+                        cfg.CMD_IPTABLES,
+                        "-A",
+                        "FORWARD",
+                        "-p",
+                        "icmp",
+                        "-d",
+                        lan_ip,
+                        "-j",
+                        "ACCEPT",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+
+                self.logger.info(
+                    f"ICMP forward: {wan_ip} (ping) → {lan_ip} (transparent)"
+                )
+
+        except subprocess.CalledProcessError as e:
+            self.logger.warning(f"Failed to setup ICMP forwarding: {e}")
+
+        # Forward TCP ports to device
         for gateway_port, device_port in cfg.PORT_FORWARDS.items():
             try:
                 # Check if rule exists
@@ -923,6 +1009,86 @@ class SimpleGateway:
             self.logger.debug(f"Error getting IPv6 addresses: {e}")
 
         return addresses
+
+    def _is_slaac_address(self, ipv6_addr: str, mac: str) -> bool:
+        """
+        Check if IPv6 address is a SLAAC address (EUI-64 based on MAC)
+
+        SLAAC addresses contain the MAC address in modified EUI-64 format.
+        Example: MAC aa:bb:cc:dd:ee:ff becomes a8bb:ccff:fedd:eeff in IPv6
+
+        Args:
+            ipv6_addr: IPv6 address to check
+            mac: Device MAC address
+
+        Returns:
+            True if address appears to be SLAAC-derived from MAC
+        """
+        try:
+            # Convert MAC to EUI-64 format for comparison
+            # MAC: aa:bb:cc:dd:ee:ff
+            # EUI-64: aabb:ccff:fedd:eeff (with 7th bit flipped in first byte)
+            mac_parts = mac.lower().split(":")
+            if len(mac_parts) != 6:
+                return False
+
+            # Get last 4 bytes of IPv6 (last 64 bits contain EUI-64)
+            ipv6_lower = ipv6_addr.lower()
+
+            # Simple heuristic: SLAAC addresses are usually longer (not compressed)
+            # and contain patterns from the MAC
+            # DHCPv6 addresses are usually short (e.g., ::85c)
+
+            # Check if address is very short (likely DHCPv6 or privacy extension)
+            if ipv6_lower.count(":") <= 3:  # e.g., "::85c" has 2 colons
+                return False
+
+            # Check if MAC bytes appear in IPv6 address (partial match)
+            # Convert MAC parts to hex string fragments
+            mac_fragments = [mac_parts[i] + mac_parts[i + 1] for i in range(0, 6, 2)]
+
+            # If any significant MAC fragment appears in IPv6, likely SLAAC
+            for fragment in mac_fragments:
+                if fragment in ipv6_lower.replace(":", ""):
+                    return True
+
+            return False
+
+        except Exception as e:
+            self.logger.debug(f"Error checking SLAAC address: {e}")
+            return False
+
+    def _select_primary_ipv6(self, addresses: list, mac: str) -> Optional[str]:
+        """
+        Select primary IPv6 address from list.
+
+        Priority:
+        1. SLAAC address (if available)
+        2. DHCPv6 or other addresses
+
+        Args:
+            addresses: List of IPv6 addresses
+            mac: Device MAC address
+
+        Returns:
+            Primary IPv6 address (SLAAC preferred, else first address)
+        """
+        if not addresses:
+            return None
+
+        # Find SLAAC addresses
+        slaac_addresses = [
+            addr for addr in addresses if self._is_slaac_address(addr, mac)
+        ]
+
+        if slaac_addresses:
+            # Prefer SLAAC
+            self.logger.info(f"Using SLAAC address: {slaac_addresses[0]}")
+            return slaac_addresses[0]
+        else:
+            # Use first address (likely DHCPv6)
+            self.logger.info(f"No SLAAC found, using DHCPv6/other: {addresses[0]}")
+            return addresses[0]
 
     def _save_state(self):
         """Save device state to file"""
