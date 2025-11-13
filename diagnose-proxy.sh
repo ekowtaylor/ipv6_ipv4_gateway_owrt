@@ -12,16 +12,46 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-DEVICE_IPV6="${1:-2620:10d:c050:100:46b7:d0ff:fea6:6dfc}"
-DEVICE_IPV4="${2:-192.168.1.128}"
+# Auto-detect device info from devices.json if no arguments provided
+DEVICES_JSON="/etc/ipv4-ipv6-gateway/devices.json"
+
+if [ -f "$DEVICES_JSON" ]; then
+    # Extract device info from JSON
+    DEVICE_MAC=$(cat "$DEVICES_JSON" | python3 -c "import sys, json; data=json.load(sys.stdin); print(list(data.keys())[0] if data else '')" 2>/dev/null || echo "")
+    AUTO_IPV4=$(cat "$DEVICES_JSON" | python3 -c "import sys, json; data=json.load(sys.stdin); print(list(data.values())[0].get('ipv4_address', '') if data else '')" 2>/dev/null || echo "")
+    AUTO_IPV6=$(cat "$DEVICES_JSON" | python3 -c "import sys, json; data=json.load(sys.stdin); print(list(data.values())[0].get('ipv6_address', '') if data else '')" 2>/dev/null || echo "")
+fi
+
+# Use command-line args if provided, otherwise use auto-detected values
+DEVICE_IPV6="${1:-${AUTO_IPV6}}"
+DEVICE_IPV4="${2:-${AUTO_IPV4}}"
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}Complete IPv6→IPv4 Proxy Diagnostics${NC}"
+echo -e "${BLUE}IPv6→IPv4 Proxy Diagnostics${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
+
+if [ -z "$DEVICE_IPV6" ] || [ -z "$DEVICE_IPV4" ]; then
+    echo -e "${RED}❌ ERROR: No device information found!${NC}"
+    echo ""
+    echo -e "${YELLOW}Usage:${NC}"
+    echo -e "  $0 [device_ipv6] [device_ipv4]"
+    echo ""
+    echo -e "${YELLOW}Or configure device in:${NC}"
+    echo -e "  $DEVICES_JSON"
+    echo ""
+    exit 1
+fi
+
 echo -e "${CYAN}Target Device:${NC}"
-echo -e "  IPv6: ${DEVICE_IPV6}"
+if [ -n "$DEVICE_MAC" ]; then
+    echo -e "  MAC:  ${DEVICE_MAC}"
+fi
 echo -e "  IPv4: ${DEVICE_IPV4}"
+echo -e "  IPv6: ${DEVICE_IPV6}"
+if [ -n "$AUTO_IPV6" ]; then
+    echo -e "${GREEN}  ✓ Auto-detected from devices.json${NC}"
+fi
 echo ""
 
 ISSUES_FOUND=0
