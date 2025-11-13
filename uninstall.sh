@@ -181,11 +181,11 @@ if [ -f "/etc/haproxy/haproxy.cfg" ]; then
     echo -e "${GREEN}✓ Removed HAProxy configuration${NC}"
 fi
 
-# CRITICAL: Clean up iptables/ip6tables rules (SURGICAL - only gateway rules)
+# CRITICAL: Clean up iptables/ip6tables rules (COMPREHENSIVE - removes ALL gateway rules)
 echo -e "${BLUE}- Cleaning up gateway firewall rules (iptables/ip6tables)...${NC}"
 
 if command -v iptables >/dev/null 2>&1; then
-    echo -e "${BLUE}  Removing gateway-specific iptables rules...${NC}"
+    echo -e "${BLUE}  Removing ALL gateway-specific iptables rules...${NC}"
 
     # Try to read device info from state file to know what rules to remove
     if [ -f "$CONFIG_DIR/device.json" ]; then
@@ -197,22 +197,52 @@ if command -v iptables >/dev/null 2>&1; then
         fi
     fi
 
-    # Remove port forwarding rules (check common ports used by gateway)
+    # COMPREHENSIVE: Remove ALL port forwarding rules for gateway ports
+    # This handles duplicate rules from multiple reconfigurations
+    echo -e "${BLUE}    Flushing ALL DNAT rules for gateway ports...${NC}"
+
     # Ports from gateway_config.py: 8080:80, 2323:23, 8443:443, 2222:22, 5900:5900, 3389:3389
     for GW_PORT in 8080 2323 8443 2222 5900 3389; do
-        # Try to delete DNAT rules for these ports (will fail silently if not present)
-        iptables -t nat -D PREROUTING -p tcp --dport $GW_PORT -j DNAT 2>/dev/null || true
+        # Keep trying to delete until no more rules exist (handles duplicates)
+        DELETED_COUNT=0
+        while iptables -t nat -D PREROUTING -p tcp --dport $GW_PORT -j DNAT 2>/dev/null; do
+            DELETED_COUNT=$((DELETED_COUNT + 1))
+        done
+
+        if [ $DELETED_COUNT -gt 0 ]; then
+            echo -e "${GREEN}      ✓ Removed $DELETED_COUNT DNAT rule(s) for port $GW_PORT${NC}"
+        fi
     done
 
-    # If we know the LAN IP, remove FORWARD rules for it
+    # Remove FORWARD rules for common device ports
+    echo -e "${BLUE}    Flushing FORWARD rules for device ports...${NC}"
+
+    # Try with known LAN IP first
     if [ -n "$LAN_IPV4" ]; then
         for DEV_PORT in 80 23 443 22 5900 3389; do
-            iptables -D FORWARD -p tcp -d $LAN_IPV4 --dport $DEV_PORT -j ACCEPT 2>/dev/null || true
+            DELETED_COUNT=0
+            while iptables -D FORWARD -p tcp -d $LAN_IPV4 --dport $DEV_PORT -j ACCEPT 2>/dev/null; do
+                DELETED_COUNT=$((DELETED_COUNT + 1))
+            done
+
+            if [ $DELETED_COUNT -gt 0 ]; then
+                echo -e "${GREEN}      ✓ Removed $DELETED_COUNT FORWARD rule(s) for $LAN_IPV4:$DEV_PORT${NC}"
+            fi
         done
-        echo -e "${GREEN}    ✓ Removed FORWARD rules for $LAN_IPV4${NC}"
     fi
 
-    echo -e "${GREEN}  ✓ Removed gateway-specific iptables rules${NC}"
+    # Also try common LAN subnet (192.168.1.x) in case state file is missing
+    echo -e "${BLUE}    Removing FORWARD rules for 192.168.1.0/24 subnet...${NC}"
+    DELETED_COUNT=0
+    while iptables -D FORWARD -d 192.168.1.0/24 -j ACCEPT 2>/dev/null; do
+        DELETED_COUNT=$((DELETED_COUNT + 1))
+    done
+
+    if [ $DELETED_COUNT -gt 0 ]; then
+        echo -e "${GREEN}      ✓ Removed $DELETED_COUNT FORWARD rule(s) for 192.168.1.0/24${NC}"
+    fi
+
+    echo -e "${GREEN}  ✓ Removed all gateway-specific iptables rules${NC}"
 fi
 
 if command -v ip6tables >/dev/null 2>&1; then
