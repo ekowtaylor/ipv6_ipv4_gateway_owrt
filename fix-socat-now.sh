@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Emergency IPv6 Proxy Fix Script
+# Emergency IPv6 Proxy Fix Script (Single-Device Mode)
 # Fixes socat binding issue and restarts proxies
 #
 
@@ -8,21 +8,22 @@ set -e
 
 echo "=================================="
 echo "IPv6 Proxy Emergency Fix"
+echo "Single-Device Mode"
 echo "=================================="
 echo ""
 
-# Auto-detect device info from devices.json
-if [ -f /etc/ipv4-ipv6-gateway/devices.json ]; then
-    DEVICE_IPV6=$(cat /etc/ipv4-ipv6-gateway/devices.json | grep -o '"ipv6_address": "[^"]*' | head -1 | cut -d'"' -f4)
-    DEVICE_IPV4=$(cat /etc/ipv4-ipv6-gateway/devices.json | grep -o '"ipv4_address": "[^"]*' | head -1 | cut -d'"' -f4)
+# Auto-detect device info from device.json (single-device mode)
+if [ -f /etc/ipv4-ipv6_gateway/device.json ]; then
+    DEVICE_IPV6=$(cat /etc/ipv4-ipv6-gateway/device.json | grep -o '"wan_ipv6": "[^"]*' | head -1 | cut -d'"' -f4)
+    DEVICE_IPV4=$(cat /etc/ipv4-ipv6-gateway/device.json | grep -o '"lan_ipv4": "[^"]*' | head -1 | cut -d'"' -f4)
 fi
 
 # Fallback to defaults if not found
 DEVICE_IPV6="${DEVICE_IPV6:-2620:10d:c050:100:46b7:d0ff:fea6:6dfc}"
 DEVICE_IPV4="${DEVICE_IPV4:-192.168.1.128}"
 
-echo "Device IPv6: $DEVICE_IPV6"
-echo "Device IPv4: $DEVICE_IPV4"
+echo "Device WAN IPv6: $DEVICE_IPV6"
+echo "Device LAN IPv4: $DEVICE_IPV4"
 echo ""
 
 # Step 1: Kill old socat processes
@@ -72,7 +73,7 @@ if [ "$SOCAT_COUNT" -ge 2 ]; then
     ps | grep socat | grep -v grep
     echo ""
     echo "=================================="
-    echo "FIXED! Test from devvm:"
+    echo "FIXED! Test from remote host:"
     echo "  curl -6 http://[$DEVICE_IPV6]"
     echo "  telnet $DEVICE_IPV6 23"
     echo "=================================="
@@ -84,5 +85,5 @@ else
     echo "  tail -50 /var/log/ipv4-ipv6-gateway.log"
     echo ""
     echo "Manual start command:"
-    echo "  socat -d -d TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:80,bind=192.168.1.1 &"
+    echo "  socat -d -d TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:80 &"
 fi

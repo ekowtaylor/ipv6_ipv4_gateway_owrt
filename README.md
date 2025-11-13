@@ -1,8 +1,18 @@
 # IPv4↔IPv6 Dual-Stack Gateway - Complete Guide
 
-**Flexible dual-stack gateway with per-device MAC registration for NanoPi R5C running OpenWrt**
+> **⚡ NOW IN SINGLE DEVICE MODE** - Simplified for easier maintenance!
+>
+> This gateway has been streamlined to handle **ONE device at a time** with:
+> - ✅ **No threading** - Simple main loop
+> - ✅ **70% less code** - 600 lines vs 2130 lines
+> - ✅ **Much easier to troubleshoot**
+> - ✅ All the same features (DHCP, SLAAC, port forwarding, WAN monitoring)
+>
+> *Complex multi-device version backed up as `ipv4_ipv6_gateway_complex.py.backup`*
 
-A Python-based service that automatically discovers devices on eth1, learns their MAC addresses, spoofs them on eth0 to request DHCP (v4 and/or v6), and maintains transparent connectivity through IPv4, IPv6, or dual-stack networks.
+**Flexible dual-stack gateway with MAC registration for NanoPi R5C running OpenWrt**
+
+A Python-based service that automatically discovers a device on eth1, learns its MAC address, spoofs it on eth0 to request DHCP (v4 and/or v6), and maintains transparent connectivity through IPv4, IPv6, or dual-stack networks.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.7+](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
@@ -32,12 +42,14 @@ This gateway service provides **flexible dual-stack support** with **per-device 
 ### Use Case
 
 Perfect for scenarios where:
-- You have **hundreds of IPv4 devices** that need to connect through **firewall-protected networks**
-- Device **MACs must be pre-registered** on the network firewall (IPv4, IPv6, or both)
+- You have **one IPv4 device** (or handle devices one at a time) that needs to connect through **firewall-protected networks**
+- Device **MAC must be pre-registered** on the network firewall (IPv4, IPv6, or both)
 - The upstream network could be **IPv4-only, IPv6-only, or dual-stack**
 - You need a **zero-configuration solution** for end devices
 
-**Real-world example:** Deploying legacy IoT devices or mobile devices to networks with strict firewall policies that only allow pre-registered MAC addresses.
+**Real-world example:** Deploying a legacy IoT device or mobile device to networks with strict firewall policies that only allow pre-registered MAC addresses.
+
+**Note:** This is a simplified **single-device** version. If you need multi-device support, see `ipv4_ipv6_gateway_complex.py.backup`.
 
 ### Network Topology
 

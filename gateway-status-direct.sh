@@ -1,97 +1,74 @@
 #!/bin/sh
 #
-# Direct gateway status check (no REST API needed)
-# Works from console/KVM without network
+# Gateway Status Script
+# Shows current device configuration from state file
 #
 
-DEVICES_FILE="/etc/ipv4-ipv6-gateway/devices.json"
-PID_FILE="/var/run/ipv4-ipv6-gateway.pid"
+STATE_FILE="/etc/ipv4-ipv6-gateway/device.json"
+LOG_FILE="/var/log/ipv4-ipv6-gateway.log"
 
-echo "========================================="
-echo "Gateway Service Status"
-echo "========================================="
-echo ""
+echo "=========================================="
+echo "GATEWAY STATUS (Single Device Mode)"
+echo "=========================================="
+echo
 
 # Check if service is running
-if [ -f "$PID_FILE" ]; then
-    PID=$(cat "$PID_FILE")
-    if kill -0 "$PID" 2>/dev/null; then
-        echo "Service Status: RUNNING (PID: $PID)"
-    else
-        echo "Service Status: STOPPED (stale PID file)"
-    fi
+if ps | grep -v grep | grep "ipv4_ipv6_gateway.py" > /dev/null; then
+    echo "Service: RUNNING"
 else
-    if ps | grep -v grep | grep -q "ipv4_ipv6_gateway.py"; then
-        PID=$(ps | grep -v grep | grep "ipv4_ipv6_gateway.py" | awk '{print $1}')
-        echo "Service Status: RUNNING (PID: $PID, no PID file)"
-    else
-        echo "Service Status: STOPPED"
-    fi
-fi
-echo ""
-
-# Check interfaces
-echo "Network Interfaces:"
-if ip link show eth0 >/dev/null 2>&1; then
-    ETH0_STATE=$(ip link show eth0 | grep -o 'state [A-Z]*' | awk '{print $2}')
-    echo "  eth0 (WAN): $ETH0_STATE"
-
-    # Show eth0 addresses
-    ETH0_IPV4=$(ip -4 addr show eth0 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1)
-    ETH0_IPV6=$(ip -6 addr show eth0 2>/dev/null | grep 'inet6' | grep -v 'fe80' | awk '{print $2}' | head -1)
-    [ -n "$ETH0_IPV4" ] && echo "    IPv4: $ETH0_IPV4"
-    [ -n "$ETH0_IPV6" ] && echo "    IPv6: $ETH0_IPV6"
-else
-    echo "  eth0 (WAN): NOT FOUND"
+    echo "Service: STOPPED"
 fi
 
-if ip link show eth1 >/dev/null 2>&1; then
-    ETH1_STATE=$(ip link show eth1 | grep -o 'state [A-Z]*' | awk '{print $2}')
-    echo "  eth1 (LAN): $ETH1_STATE"
+echo
 
-    # Show eth1 addresses
-    ETH1_IPV4=$(ip -4 addr show eth1 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1)
-    [ -n "$ETH1_IPV4" ] && echo "    IPv4: $ETH1_IPV4"
-else
-    echo "  eth1 (LAN): NOT FOUND"
-fi
-echo ""
+# Check if device is configured
+if [ -f "$STATE_FILE" ]; then
+    echo "Device Configuration:"
+    echo "--------------------"
 
-# Check device store
-echo "Device Store:"
-if [ -f "$DEVICES_FILE" ]; then
-    # Count devices
-    DEVICE_COUNT=$(cat "$DEVICES_FILE" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d))' 2>/dev/null || echo "0")
-    echo "  Total devices: $DEVICE_COUNT"
+    # Parse JSON manually (simple extraction)
+    MAC=$(cat "$STATE_FILE" | grep '"mac_address"' | cut -d'"' -f4)
+    LAN_IP=$(cat "$STATE_FILE" | grep '"lan_ipv4"' | cut -d'"' -f4)
+    WAN_IPV4=$(cat "$STATE_FILE" | grep '"wan_ipv4"' | cut -d'"' -f4)
+    WAN_IPV6=$(cat "$STATE_FILE" | grep '"wan_ipv6"' | cut -d'"' -f4)
+    STATUS=$(cat "$STATE_FILE" | grep '"status"' | cut -d'"' -f4)
+    UPDATED=$(cat "$STATE_FILE" | grep '"last_updated"' | cut -d'"' -f4)
 
-    if [ "$DEVICE_COUNT" -gt 0 ]; then
-        # Count by status
-        ACTIVE=$(cat "$DEVICES_FILE" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(sum(1 for v in d.values() if v.get("status")=="active"))' 2>/dev/null || echo "0")
-        DISCOVERING=$(cat "$DEVICES_FILE" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(sum(1 for v in d.values() if v.get("status")=="discovering"))' 2>/dev/null || echo "0")
-        FAILED=$(cat "$DEVICES_FILE" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(sum(1 for v in d.values() if v.get("status")=="failed"))' 2>/dev/null || echo "0")
+    echo "MAC:         $MAC"
+    echo "LAN IPv4:    ${LAN_IP:-N/A}"
+    echo "WAN IPv4:    ${WAN_IPV4:-N/A}"
+    echo "WAN IPv6:    ${WAN_IPV6:-N/A}"
+    echo "Status:      $STATUS"
+    echo "Last Update: $UPDATED"
+    echo
 
-        echo "    Active: $ACTIVE"
-        echo "    Discovering: $DISCOVERING"
-        echo "    Failed: $FAILED"
+    # Show access info
+    if [ -n "$WAN_IPV4" ] && [ "$WAN_IPV4" != "null" ]; then
+        echo "IPv4 Access (from WAN):"
+        echo "  HTTP:   http://${WAN_IPV4}:8080"
+        echo "  Telnet: telnet ${WAN_IPV4} 2323"
+        echo "  SSH:    ssh -p 2222 user@${WAN_IPV4}"
+        echo
     fi
 
-    echo ""
-    echo "  Last updated: $(stat -c %y "$DEVICES_FILE" 2>/dev/null || stat -f %Sm "$DEVICES_FILE" 2>/dev/null || echo "unknown")"
-else
-    echo "  No devices file found"
-fi
-echo ""
+    if [ -n "$WAN_IPV6" ] && [ "$WAN_IPV6" != "null" ]; then
+        echo "IPv6 Access (from WAN):"
+        echo "  HTTP:   http://[${WAN_IPV6}]:80"
+        echo "  Telnet: telnet ${WAN_IPV6} 23"
+        echo
+    fi
 
-# Check logs
-echo "Recent Log Entries:"
-if [ -f "/var/log/ipv4-ipv6-gateway.log" ]; then
-    tail -5 /var/log/ipv4-ipv6-gateway.log
 else
-    echo "  No log file found"
+    echo "No device configured yet"
+    echo
 fi
-echo ""
 
-echo "========================================="
-echo "Use 'gateway-devices-direct' to list all devices"
-echo "Use 'tail -f /var/log/ipv4-ipv6-gateway.log' for live logs"
-echo "========================================="
+# Show recent log entries
+if [ -f "$LOG_FILE" ]; then
+    echo "Recent Log Entries (last 10 lines):"
+    echo "------------------------------------"
+    tail -10 "$LOG_FILE"
+fi
+
+echo
+echo "=========================================="

@@ -173,27 +173,25 @@ else
 fi
 echo ""
 
-# Step 6: Get device info
+# Step 6: Get device info (single-device mode)
 echo -e "${YELLOW}Step 6: Getting device information...${NC}"
-if [ -f "$INSTALL_DIR/../../etc/ipv4-ipv6-gateway/devices.json" ]; then
-    DEVICES=$(cat "$INSTALL_DIR/../../etc/ipv4-ipv6-gateway/devices.json" 2>/dev/null || echo "{}")
-    echo -e "${BLUE}Configured devices:${NC}"
-    echo "$DEVICES" | python3 -m json.tool 2>/dev/null || echo "$DEVICES"
-elif [ -f "/etc/ipv4-ipv6-gateway/devices.json" ]; then
-    DEVICES=$(cat "/etc/ipv4-ipv6-gateway/devices.json" 2>/dev/null || echo "{}")
-    echo -e "${BLUE}Configured devices:${NC}"
-    echo "$DEVICES" | python3 -m json.tool 2>/dev/null || echo "$DEVICES"
+DEVICE_FILE="/etc/ipv4-ipv6-gateway/device.json"
+
+if [ -f "$DEVICE_FILE" ]; then
+    DEVICE=$(cat "$DEVICE_FILE" 2>/dev/null || echo "{}")
+    echo -e "${BLUE}Configured device:${NC}"
+    echo "$DEVICE" | python3 -m json.tool 2>/dev/null || echo "$DEVICE"
 else
-    echo -e "${YELLOW}⚠ No devices file found${NC}"
-    echo -e "${YELLOW}  This is normal if no devices have been discovered yet${NC}"
+    echo -e "${YELLOW}⚠ No device file found${NC}"
+    echo -e "${YELLOW}  This is normal if no device has been discovered yet${NC}"
 fi
 echo ""
 
 # Step 7: Test direct connection to device (bypass proxy)
 echo -e "${YELLOW}Step 7: Testing direct connection to device...${NC}"
-if [ -f "/etc/ipv4-ipv6-gateway/devices.json" ]; then
-    # Extract first device IP
-    DEVICE_IP=$(cat "/etc/ipv4-ipv6-gateway/devices.json" | python3 -c "import sys, json; data=json.load(sys.stdin); print(list(data.values())[0]['ipv4_address']) if data else ''" 2>/dev/null || echo "")
+if [ -f "$DEVICE_FILE" ]; then
+    # Extract device IP (single-device mode)
+    DEVICE_IP=$(cat "$DEVICE_FILE" | python3 -c "import sys, json; data=json.load(sys.stdin); print(data.get('lan_ipv4', ''))" 2>/dev/null || echo "")
 
     if [ -n "$DEVICE_IP" ]; then
         echo -e "${BLUE}Testing telnet to $DEVICE_IP:23 (direct, bypass proxy)...${NC}"
@@ -205,7 +203,11 @@ if [ -f "/etc/ipv4-ipv6-gateway/devices.json" ]; then
         timeout 3 curl -s "http://$DEVICE_IP:80" >/dev/null 2>&1 && \
             echo -e "${GREEN}✓ Direct HTTP works${NC}" || \
             echo -e "${RED}✗ Direct HTTP failed${NC}"
+    else
+        echo -e "${YELLOW}⚠ No device IP found in $DEVICE_FILE${NC}"
     fi
+else
+    echo -e "${YELLOW}⚠ No device configured yet${NC}"
 fi
 echo ""
 

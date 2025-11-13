@@ -86,35 +86,29 @@ else
 fi
 echo ""
 
-# 3. API health
-echo -e "${YELLOW}3) API health check${NC}"
+# 3. Device state (direct check - works without API)
+echo -e "${YELLOW}3) Device state check (single-device mode)${NC}"
+DEVICE_STATE="/etc/ipv4-ipv6-gateway/device.json"
+
+if [ -f "$DEVICE_STATE" ]; then
+    echo -e "${BLUE}- Device configuration:${NC}"
+    cat "$DEVICE_STATE" | python3 -m json.tool 2>/dev/null || cat "$DEVICE_STATE"
+    echo -e "${GREEN}  -> Device state found${NC}"
+else
+    echo -e "${YELLOW}  -> No device configured yet ($DEVICE_STATE not found)${NC}"
+fi
+echo ""
+
+# Optional API health check (if API is running)
+echo -e "${YELLOW}3b) API health check (optional in single-device mode)${NC}"
 
 echo -e "${BLUE}- /health:${NC}"
 if OUTPUT=$(http_get "${API_BASE}/health" 2>/dev/null); then
     echo "$OUTPUT" | python3 -m json.tool 2>/dev/null || echo "$OUTPUT"
-    echo -e "${GREEN}  -> /health responded${NC}"
+    echo -e "${GREEN}  -> /health responded (API is running)${NC}"
 else
-    echo -e "${RED}  -> Failed to reach /health${NC}"
-fi
-echo ""
-
-echo -e "${BLUE}- /status (summary):${NC}"
-if OUTPUT=$(http_get "${API_BASE}/status" 2>/dev/null); then
-    RUNNING=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("running"))' 2>/dev/null || echo "?")
-    DEV_COUNT=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("device_count"))' 2>/dev/null || echo "?")
-    ACTIVE_COUNT=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("active_devices"))' 2>/dev/null || echo "?")
-    ETH0_UP=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("eth0_up"))' 2>/dev/null || echo "?")
-    ETH1_UP=$(echo "$OUTPUT" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("eth1_up"))' 2>/dev/null || echo "?")
-
-    echo "  running       : ${RUNNING}"
-    echo "  device_count  : ${DEV_COUNT}"
-    echo "  active_devices: ${ACTIVE_COUNT}"
-    echo "  eth0_up       : ${ETH0_UP}"
-    echo "  eth1_up       : ${ETH1_UP}"
-    echo ""
-    echo -e "${GREEN}  -> /status responded${NC}"
-else
-    echo -e "${RED}  -> Failed to reach /status${NC}"
+    echo -e "${YELLOW}  -> API not responding (this is OK in single-device mode)${NC}"
+    echo -e "${BLUE}  ℹ Use gateway-status-direct instead${NC}"
 fi
 echo ""
 

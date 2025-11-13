@@ -2,6 +2,7 @@
 #
 # Manual Network Configuration Fix
 # Use this if UCI import isn't working correctly
+# Works with single-device simplified gateway
 #
 
 set -e

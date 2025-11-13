@@ -1,59 +1,13 @@
-# Byte-compiled / optimized / DLL files
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
-
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
-
-# Virtual environments
-venv/
-ENV/
-env/
-.venv
+*.egg-info/
+dist/
+build/
+.Python
 
 # IDEs
 .vscode/
@@ -61,48 +15,27 @@ env/
 *.swp
 *.swo
 *~
+
+# OS
 .DS_Store
+Thumbs.db
 
-# Project-specific
+# Logs
 *.log
-devices.json
-devices.json.bak
-devices.json.tmp
-*.json.bak
-*.json.tmp
-
-# Backup files
-*.backup
-*.bak
-*_backup_*
 
 # Temporary files
 *.tmp
-*.temp
-.temp/
+*.bak
+*.backup
+*.old
+
+# Local development
+local/
 tmp/
+test/
 
-# Configuration overrides (may contain sensitive data)
-config.py.local
-local_config.py
-
-# Network captures
-*.pcap
-*.pcapng
-
-# Documentation builds
-docs/_build/
-docs/.doctrees/
-
-# OS-specific
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-
-# Archives
-*.zip
-*.tar.gz
-*.tgz
-*.rar
-*.7z
+# Environment
+.env
+.venv
+env/
+venv/

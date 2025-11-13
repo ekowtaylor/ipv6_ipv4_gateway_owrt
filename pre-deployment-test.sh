@@ -43,11 +43,15 @@ check "Gateway service is running" "ps | grep -q '[i]pv4_ipv6_gateway'"
 check "DHCP server (dnsmasq) is running" "ps | grep -q '[d]nsmasq'"
 echo ""
 
-# API Checks
-echo "API Server:"
-check "API listening on port 5050" "netstat -tuln 2>/dev/null | grep -q ':5050' || ss -tuln 2>/dev/null | grep -q ':5050'"
-check "API health endpoint responds" "curl -sf http://127.0.0.1:5050/health >/dev/null 2>&1"
-check "API status endpoint responds" "curl -sf http://127.0.0.1:5050/status >/dev/null 2>&1"
+# API Checks (Optional in single-device mode)
+echo "API Server (optional in single-device mode):"
+if check "API listening on port 5050" "netstat -tuln 2>/dev/null | grep -q ':5050' || ss -tuln 2>/dev/null | grep -q ':5050'"; then
+    check "API health endpoint responds" "curl -sf http://127.0.0.1:5050/health >/dev/null 2>&1"
+    check "API status endpoint responds" "curl -sf http://127.0.0.1:5050/status >/dev/null 2>&1"
+else
+    echo -e "${YELLOW}  ℹ  API not running (this is OK in single-device mode)${NC}"
+    echo -e "${YELLOW}  ℹ  Use gateway-status-direct for console access${NC}"
+fi
 echo ""
 
 # Firewall & Forwarding

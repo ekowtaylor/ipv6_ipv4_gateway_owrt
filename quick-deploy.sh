@@ -49,19 +49,10 @@ for file in "${REQUIRED_FILES[@]}"; do
 done
 echo ""
 
-# Verify gateway_config.py has correct API_HOST
-echo -e "${YELLOW}Verifying configuration...${NC}"
-if grep -q 'API_HOST = "0.0.0.0"' "$SCRIPT_DIR/gateway_config.py"; then
-    echo -e "  ${GREEN}✓ API_HOST correctly set to 0.0.0.0${NC}"
-else
-    if grep -q 'API_HOST = "127.0.0.1"' "$SCRIPT_DIR/gateway_config.py"; then
-        echo -e "  ${YELLOW}⚠ Fixing API_HOST (127.0.0.1 → 0.0.0.0)${NC}"
-        sed -i.bak 's/API_HOST = "127.0.0.1"/API_HOST = "0.0.0.0"/' "$SCRIPT_DIR/gateway_config.py"
-        echo -e "  ${GREEN}✓ API_HOST fixed${NC}"
-    else
-        echo -e "  ${YELLOW}⚠ Could not verify API_HOST setting${NC}"
-    fi
-fi
+# Note: Configuration check
+echo -e "${YELLOW}Configuration notes...${NC}"
+echo -e "  ${BLUE}ℹ Single-Device Mode: API is optional${NC}"
+echo -e "  ${BLUE}ℹ Use gateway-status-direct for console access${NC}"
 echo ""
 
 # Copy files to router

@@ -7,8 +7,8 @@ Production-grade alternative to socat for complex protocol handling
 import logging
 import os
 import subprocess
-import time
 import threading
+import time
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -31,13 +31,17 @@ class HAProxyManager:
 
     def __init__(self):
         self.logger = logging.getLogger("HAProxyManager")
-        self.devices: Dict[str, Dict] = {}  # {mac: {"ipv4": "...", "ipv6": "...", "ports": {...}}}
+        self.devices: Dict[str, Dict] = (
+            {}
+        )  # {mac: {"ipv4": "...", "ipv6": "...", "ports": {...}}}
         self._lock = threading.Lock()
         self.haproxy_process: Optional[subprocess.Popen] = None
         self.haproxy_log_file: Optional[object] = None  # Track log file handle
         self.config_file = cfg.HAPROXY_CONFIG_FILE
 
-    def start_proxy_for_device(self, mac: str, device_ipv4: str, device_ipv6: str, port_map: Dict[int, int]) -> bool:
+    def start_proxy_for_device(
+        self, mac: str, device_ipv4: str, device_ipv6: str, port_map: Dict[int, int]
+    ) -> bool:
         """
         Add device to HAProxy configuration and reload.
 
@@ -50,14 +54,16 @@ class HAProxyManager:
         Returns:
             True if proxy configuration updated successfully
         """
-        self.logger.info(f"Adding IPv6→IPv4 HAProxy config for device {device_ipv4} (IPv6: {device_ipv6}, MAC: {mac})")
+        self.logger.info(
+            f"Adding IPv6→IPv4 HAProxy config for device {device_ipv4} (IPv6: {device_ipv6}, MAC: {mac})"
+        )
 
         with self._lock:
             # Store device config
             self.devices[mac] = {
                 "ipv4": device_ipv4,
                 "ipv6": device_ipv6,
-                "ports": port_map
+                "ports": port_map,
             }
 
             # Regenerate full HAProxy config
@@ -116,9 +122,7 @@ class HAProxyManager:
             # Also try system service stop
             try:
                 subprocess.run(
-                    ["/etc/init.d/haproxy", "stop"],
-                    capture_output=True,
-                    timeout=5
+                    ["/etc/init.d/haproxy", "stop"], capture_output=True, timeout=5
                 )
             except Exception:
                 pass
@@ -136,18 +140,15 @@ class HAProxyManager:
                     "configured": True,
                     "device_ip": self.devices[mac]["ipv4"],
                     "ports": self.devices[mac]["ports"],
-                    "haproxy_running": self._is_haproxy_running()
+                    "haproxy_running": self._is_haproxy_running(),
                 }
             else:
                 return {
                     "devices": {
-                        mac: {
-                            "device_ip": info["ipv4"],
-                            "ports": info["ports"]
-                        }
+                        mac: {"device_ip": info["ipv4"], "ports": info["ports"]}
                         for mac, info in self.devices.items()
                     },
-                    "haproxy_running": self._is_haproxy_running()
+                    "haproxy_running": self._is_haproxy_running(),
                 }
 
     def _generate_haproxy_config(self) -> bool:
@@ -161,7 +162,7 @@ class HAProxyManager:
             config = self._build_haproxy_config()
 
             # Write to file
-            with open(self.config_file, 'w') as f:
+            with open(self.config_file, "w") as f:
                 f.write(config)
 
             self.logger.debug(f"Generated HAProxy config: {self.config_file}")
@@ -192,7 +193,9 @@ class HAProxyManager:
         lines.append("    option tcplog")
         lines.append("    # Log everything - including null connections")
         lines.append("    # Enhanced logging with detailed connection info")
-        lines.append("    log-format \"HAPROXY[%pid]: Client=%ci:%cp Frontend=%ft Backend=%b/%s ConnTime=%Tc/%Tw/%Tt Bytes=%B Status=%ts Counters=%ac/%fc/%bc/%sc/%rc Queues=%sq/%bq\"")
+        lines.append(
+            '    log-format "HAPROXY[%pid]: Client=%ci:%cp Frontend=%ft Backend=%b/%s ConnTime=%Tc/%Tw/%Tt Bytes=%B Status=%ts Counters=%ac/%fc/%bc/%sc/%rc Queues=%sq/%bq"'
+        )
         lines.append("    timeout connect 5000ms")
         lines.append("    timeout client 50000ms")
         lines.append("    timeout server 50000ms")
@@ -221,7 +224,9 @@ class HAProxyManager:
                 ipaddress.IPv4Address(device_ip)
                 ipaddress.IPv6Address(device_ipv6)
             except ValueError as e:
-                self.logger.error(f"Invalid IP address for device {mac}: IPv4={device_ip}, IPv6={device_ipv6}. Error: {e}")
+                self.logger.error(
+                    f"Invalid IP address for device {mac}: IPv4={device_ip}, IPv6={device_ipv6}. Error: {e}"
+                )
                 continue  # Skip this device
 
             # Sanitize MAC for use in names (replace : with _)
@@ -236,20 +241,31 @@ class HAProxyManager:
                 # Frontend (IPv6 listener) - BIND TO DEVICE-SPECIFIC IPv6 ADDRESS
                 lines.append(f"frontend {frontend_name}")
                 lines.append(f"    bind [{device_ipv6}]:{gateway_port} v6only")
-                lines.append(f"    # Device IPv6: {device_ipv6}:{gateway_port} → IPv4: {device_ip}:{device_port}")
+                lines.append(
+                    f"    # Device IPv6: {device_ipv6}:{gateway_port} → IPv4: {device_ip}:{device_port}"
+                )
                 lines.append(f"    # MAC: {mac}")
                 lines.append(f"    default_backend {backend_name}")
                 lines.append("")
 
                 # Backend (IPv4 target)
                 lines.append(f"backend {backend_name}")
-                lines.append(f"    # Target device: {device_ip}:{device_port} (MAC: {mac})")
-                lines.append(f"    # Health checks disabled - allow connections even if device is slow/down")
+                lines.append(
+                    f"    # Target device: {device_ip}:{device_port} (MAC: {mac})"
+                )
+                lines.append(
+                    f"    # Health checks disabled - allow connections even if device is slow/down"
+                )
                 lines.append(f"    # Increased timeouts for slow devices")
                 lines.append(f"    timeout connect 10s")
                 lines.append(f"    timeout server 300s")
-                lines.append(f"    # NO source binding - kernel auto-selects for proper routing")
-                lines.append(f"    # (Binding to 192.168.1.1 causes cross-interface routing conflicts)")
+                lines.append(
+                    f"    # CRITICAL: Source from gateway LAN IP for return traffic"
+                )
+                lines.append(
+                    f"    # Without this, device sees requests from IPv6 address and can't respond"
+                )
+                lines.append(f"    source 192.168.1.1")
                 lines.append(f"    server device_{safe_mac} {device_ip}:{device_port}")
                 lines.append("")
 
@@ -263,7 +279,7 @@ class HAProxyManager:
             23: "telnet",
             22: "ssh",
             5900: "vnc",
-            3389: "rdp"
+            3389: "rdp",
         }
         return port_names.get(port, f"port{port}")
 
@@ -274,7 +290,7 @@ class HAProxyManager:
             test_result = subprocess.run(
                 ["haproxy", "-c", "-f", self.config_file],
                 capture_output=True,
-                text=True
+                text=True,
             )
 
             if test_result.returncode != 0:
@@ -317,24 +333,34 @@ class HAProxyManager:
                 ["haproxy", "-f", self.config_file],
                 stdout=log_file,
                 stderr=subprocess.STDOUT,  # Merge stderr to stdout to catch bind errors
-                start_new_session=True  # Detach from parent
+                start_new_session=True,  # Detach from parent
             )
 
             # Wait a moment and check if it's still running
             time.sleep(2)
 
             if self.haproxy_process.poll() is not None:
-                self.logger.error(f"HAProxy failed to start (exit code: {self.haproxy_process.returncode})")
-                self.logger.error("Check /var/log/ipv4-ipv6-gateway.log for HAProxy errors")
+                self.logger.error(
+                    f"HAProxy failed to start (exit code: {self.haproxy_process.returncode})"
+                )
+                self.logger.error(
+                    "Check /var/log/ipv4-ipv6-gateway.log for HAProxy errors"
+                )
                 return False
 
             # Verify HAProxy is actually listening on the configured ports
             if not self._verify_haproxy_listening():
-                self.logger.error("HAProxy started but is not listening on configured ports")
-                self.logger.error("This usually means bind failed - check logs for 'Cannot bind' errors")
+                self.logger.error(
+                    "HAProxy started but is not listening on configured ports"
+                )
+                self.logger.error(
+                    "This usually means bind failed - check logs for 'Cannot bind' errors"
+                )
                 return False
 
-            self.logger.info(f"HAProxy started successfully (PID: {self.haproxy_process.pid})")
+            self.logger.info(
+                f"HAProxy started successfully (PID: {self.haproxy_process.pid})"
+            )
             return True
 
         except Exception as e:
@@ -345,11 +371,7 @@ class HAProxyManager:
         """Kill all existing HAProxy processes"""
         try:
             # Find all haproxy processes
-            result = subprocess.run(
-                ["ps", "-w"],
-                capture_output=True,
-                text=True
-            )
+            result = subprocess.run(["ps", "-w"], capture_output=True, text=True)
 
             for line in result.stdout.splitlines():
                 if "haproxy" in line and "grep" not in line:
@@ -358,7 +380,9 @@ class HAProxyManager:
                     if parts:
                         try:
                             pid = int(parts[0])
-                            self.logger.info(f"Killing existing HAProxy process (PID: {pid})")
+                            self.logger.info(
+                                f"Killing existing HAProxy process (PID: {pid})"
+                            )
                             subprocess.run(["kill", str(pid)], timeout=2)
                         except (ValueError, subprocess.TimeoutExpired):
                             pass
@@ -374,16 +398,18 @@ class HAProxyManager:
         try:
             # Get all listening ports from netstat
             result = subprocess.run(
-                ["netstat", "-tlnp"],
-                capture_output=True,
-                text=True
+                ["netstat", "-tlnp"], capture_output=True, text=True
             )
 
             # Check if haproxy is in the output
-            haproxy_lines = [line for line in result.stdout.splitlines() if "haproxy" in line]
+            haproxy_lines = [
+                line for line in result.stdout.splitlines() if "haproxy" in line
+            ]
 
             if not haproxy_lines:
-                self.logger.warning("HAProxy process exists but no listening sockets found")
+                self.logger.warning(
+                    "HAProxy process exists but no listening sockets found"
+                )
                 return False
 
             # Log what ports HAProxy is listening on
@@ -402,11 +428,7 @@ class HAProxyManager:
         """Check if HAProxy is running"""
         try:
             # Check via ps
-            result = subprocess.run(
-                ["ps", "-w"],
-                capture_output=True,
-                text=True
-            )
+            result = subprocess.run(["ps", "-w"], capture_output=True, text=True)
             return "haproxy" in result.stdout
         except Exception:
             return False
