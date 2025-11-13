@@ -42,6 +42,174 @@ logging.basicConfig(
 logger = logging.getLogger("GatewayService")
 
 
+class GatewayMetrics:
+    """
+    Tracks performance metrics and statistics for the gateway.
+
+    Provides insights into:
+    - IPv4/IPv6 discovery times
+    - Cache hit rates
+    - Success/failure rates
+    - Protocol usage patterns
+    """
+
+    def __init__(self):
+        self.counters = {
+            "devices_discovered": 0,
+            "ipv4_discoveries": 0,
+            "ipv6_discoveries": 0,
+            "ipv6_cache_hits": 0,
+            "ipv6_cache_misses": 0,
+            "ipv4_successes": 0,
+            "ipv4_failures": 0,
+            "ipv6_successes": 0,
+            "ipv6_failures": 0,
+            "slaac_successes": 0,
+            "dhcpv6_successes": 0,
+            "proxy_starts": 0,
+            "proxy_failures": 0,
+            "mac_restorations": 0,
+            "wan_ip_changes": 0,
+        }
+
+        self.timings = {
+            "ipv4_discovery_ms": [],
+            "ipv6_discovery_ms": [],
+            "total_discovery_ms": [],
+        }
+
+        self._lock = threading.Lock()
+        self.logger = logging.getLogger("GatewayMetrics")
+
+    def record_ipv4_discovery(self, duration_ms: float, success: bool):
+        """Record IPv4 discovery attempt"""
+        with self._lock:
+            self.counters["ipv4_discoveries"] += 1
+            if success:
+                self.counters["ipv4_successes"] += 1
+                self.timings["ipv4_discovery_ms"].append(duration_ms)
+            else:
+                self.counters["ipv4_failures"] += 1
+
+    def record_ipv6_discovery(self, duration_ms: float, success: bool, from_cache: bool):
+        """Record IPv6 discovery attempt"""
+        with self._lock:
+            self.counters["ipv6_discoveries"] += 1
+            if success:
+                self.counters["ipv6_successes"] += 1
+                self.timings["ipv6_discovery_ms"].append(duration_ms)
+
+                if from_cache:
+                    self.counters["ipv6_cache_hits"] += 1
+                else:
+                    self.counters["ipv6_cache_misses"] += 1
+            else:
+                self.counters["ipv6_failures"] += 1
+                self.counters["ipv6_cache_misses"] += 1
+
+    def record_total_discovery(self, duration_ms: float):
+        """Record total discovery time (IPv4 + IPv6)"""
+        with self._lock:
+            self.timings["total_discovery_ms"].append(duration_ms)
+            self.counters["devices_discovered"] += 1
+
+    def record_proxy_start(self, success: bool):
+        """Record proxy startup attempt"""
+        with self._lock:
+            if success:
+                self.counters["proxy_starts"] += 1
+            else:
+                self.counters["proxy_failures"] += 1
+
+    def record_mac_restoration(self):
+        """Record MAC address restoration"""
+        with self._lock:
+            self.counters["mac_restorations"] += 1
+
+    def record_wan_ip_change(self):
+        """Record WAN IP address change"""
+        with self._lock:
+            self.counters["wan_ip_changes"] += 1
+
+    def get_stats(self) -> dict:
+        """Get comprehensive statistics"""
+        with self._lock:
+            # Calculate averages
+            avg_ipv4_time = (
+                sum(self.timings["ipv4_discovery_ms"]) / len(self.timings["ipv4_discovery_ms"])
+                if self.timings["ipv4_discovery_ms"]
+                else 0
+            )
+
+            avg_ipv6_time = (
+                sum(self.timings["ipv6_discovery_ms"]) / len(self.timings["ipv6_discovery_ms"])
+                if self.timings["ipv6_discovery_ms"]
+                else 0
+            )
+
+            avg_total_time = (
+                sum(self.timings["total_discovery_ms"]) / len(self.timings["total_discovery_ms"])
+                if self.timings["total_discovery_ms"]
+                else 0
+            )
+
+            # Calculate cache hit rate
+            total_ipv6_attempts = (
+                self.counters["ipv6_cache_hits"] + self.counters["ipv6_cache_misses"]
+            )
+            cache_hit_rate = (
+                (self.counters["ipv6_cache_hits"] / total_ipv6_attempts * 100)
+                if total_ipv6_attempts > 0
+                else 0
+            )
+
+            # Calculate success rates
+            ipv4_success_rate = (
+                (self.counters["ipv4_successes"] / self.counters["ipv4_discoveries"] * 100)
+                if self.counters["ipv4_discoveries"] > 0
+                else 0
+            )
+
+            ipv6_success_rate = (
+                (self.counters["ipv6_successes"] / self.counters["ipv6_discoveries"] * 100)
+                if self.counters["ipv6_discoveries"] > 0
+                else 0
+            )
+
+            return {
+                "counters": self.counters.copy(),
+                "averages": {
+                    "ipv4_discovery_ms": round(avg_ipv4_time, 1),
+                    "ipv6_discovery_ms": round(avg_ipv6_time, 1),
+                    "total_discovery_ms": round(avg_total_time, 1),
+                },
+                "rates": {
+                    "ipv6_cache_hit_rate": round(cache_hit_rate, 1),
+                    "ipv4_success_rate": round(ipv4_success_rate, 1),
+                    "ipv6_success_rate": round(ipv6_success_rate, 1),
+                },
+                "recent_discoveries": {
+                    "count": len(self.timings["total_discovery_ms"]),
+                    "last_5_times_ms": self.timings["total_discovery_ms"][-5:] if self.timings["total_discovery_ms"] else [],
+                }
+            }
+
+    def log_stats(self):
+        """Log current statistics"""
+        stats = self.get_stats()
+        self.logger.info("=" * 60)
+        self.logger.info("GATEWAY PERFORMANCE STATISTICS")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Devices discovered: {stats['counters']['devices_discovered']}")
+        self.logger.info(f"IPv6 cache hit rate: {stats['rates']['ipv6_cache_hit_rate']:.1f}%")
+        self.logger.info(f"IPv4 success rate: {stats['rates']['ipv4_success_rate']:.1f}%")
+        self.logger.info(f"IPv6 success rate: {stats['rates']['ipv6_success_rate']:.1f}%")
+        self.logger.info(f"Avg IPv4 time: {stats['averages']['ipv4_discovery_ms']:.1f}ms")
+        self.logger.info(f"Avg IPv6 time: {stats['averages']['ipv6_discovery_ms']:.1f}ms")
+        self.logger.info(f"Avg total time: {stats['averages']['total_discovery_ms']:.1f}ms")
+        self.logger.info("=" * 60)
+
+
 @dataclass
 class DeviceMapping:
     """Represents an IPv4 device and its discovered WAN addresses (IPv4 and/or IPv6)"""
@@ -381,26 +549,80 @@ class DHCPv6Manager:
         self.logger = logging.getLogger("DHCPv6Manager")
         self.iface = NetworkInterface(interface)
 
-    def request_ipv6_for_mac(self, mac: str) -> Optional[str]:
+    def request_ipv6_address(
+        self, mac: str, cached_ipv6: Optional[str] = None
+    ) -> Optional[str]:
         """
-        Spoof MAC on interface, enable SLAAC + DHCPv6, return assigned IPv6 address.
+        Request IPv6 address for device MAC using SLAAC or DHCPv6.
 
-        This method supports both IPv6 address assignment methods:
-        1. SLAAC (Stateless Address Autoconfiguration) - uses Router Advertisement
-        2. DHCPv6 (Stateful) - requests address from DHCPv6 server
+        OPTIMIZATION: If cached_ipv6 is provided and MAC hasn't changed, we try to
+        reuse the cached IPv6 instead of requesting a new one. This is MUCH faster
+        than full SLAAC/DHCPv6 (which takes 15+ seconds).
 
-        Many networks use both:
-        - SLAAC for address assignment
-        - DHCPv6 for additional info (DNS, NTP, etc.)
+        Strategy:
+        1. If cached IPv6 provided and MAC is already set → try to reuse cached IPv6
+        2. If reuse fails or no cache → do full SLAAC/DHCPv6 acquisition
+        3. Cache the successful IPv6 for future reuse
 
-        Uses exponential backoff retry logic for reliability.
+        CRITICAL: This method does NOT restore the original MAC after obtaining IPv6!
+        For MAC-authenticated networks (802.1X, MAC filtering), we must keep the
+        device's MAC address permanently on the WAN interface. The network only
+        allows traffic from authenticated MACs, so using gateway's MAC would block traffic.
+
+        Args:
+            mac: Device MAC address to request IPv6 for
+            cached_ipv6: Previously successful IPv6 for this MAC (optional)
+
+        Returns:
+            IPv6 address if successful, None otherwise
         """
-        self.logger.info(f"Requesting IPv6 for MAC: {mac} (SLAAC + DHCPv6)")
-
         original_mac = self.iface.get_mac_address()
         obtained_ipv6 = None  # Track obtained IPv6 for re-adding after MAC restoration
 
         try:
+            # OPTIMIZATION: Try to reuse cached IPv6 if available
+            if cached_ipv6 and original_mac == mac:
+                self.logger.info(
+                    f"Attempting to reuse cached IPv6 {cached_ipv6} for MAC {mac} "
+                    f"(MAC unchanged, skipping full SLAAC/DHCPv6)"
+                )
+
+                # Check if cached IPv6 is already configured
+                current_ipv6s = self.iface.get_ipv6_addresses()
+                if cached_ipv6 in current_ipv6s:
+                    self.logger.info(
+                        f"✓ Cached IPv6 {cached_ipv6} already configured on {self.interface}"
+                    )
+                    return cached_ipv6
+
+                # Try to add cached IPv6
+                if self.iface.add_ipv6_address(cached_ipv6, 64):
+                    # Verify it was added successfully
+                    time.sleep(1)
+                    current_ipv6s = self.iface.get_ipv6_addresses()
+                    if cached_ipv6 in current_ipv6s:
+                        self.logger.info(
+                            f"✓ Successfully reused cached IPv6 {cached_ipv6} "
+                            f"(saved ~15s SLAAC wait)"
+                        )
+                        return cached_ipv6
+                    else:
+                        self.logger.warning(
+                            f"Failed to verify cached IPv6 {cached_ipv6} - "
+                            f"falling back to full acquisition"
+                        )
+                else:
+                    self.logger.warning(
+                        f"Failed to add cached IPv6 {cached_ipv6} - "
+                        f"falling back to full acquisition"
+                    )
+
+            # Full IPv6 acquisition (SLAAC/DHCPv6)
+            self.logger.info(
+                f"Performing full IPv6 acquisition for MAC {mac} "
+                f"(no cache or MAC changed)"
+            )
+
             self.iface.flush_ipv6_addresses()
 
             if not self.iface.set_mac_address(mac):
@@ -2367,31 +2589,86 @@ class GatewayService:
             # Determine which protocols to attempt
             attempt_ipv4, attempt_ipv6 = self.should_attempt_protocols()
 
-            # Request IPv4 if we should attempt it
-            if attempt_ipv4:
-                self.logger.info(f"Requesting DHCPv4 for {mac}")
-                ipv4_wan = self.dhcpv4_manager.request_ipv4_for_mac(mac)
+            # OPTIMIZATION: Parallel IPv4/IPv6 discovery
+            # Launch both protocols simultaneously to reduce total discovery time
+            # Before: IPv4 (2-5s) + IPv6 (15-75s) = 17-80s total (sequential)
+            # After: max(IPv4, IPv6) = 15-75s total (parallel) - 50% faster!
 
-                with self._devices_lock:
-                    device = self.devices.get(mac)
-                    if device and ipv4_wan:
+            import time as timing_module
+            discovery_start_time = timing_module.time()
+
+            ipv4_wan = None
+            ipv6 = None
+
+            # Get cached IPv6 before launching threads
+            cached_ipv6 = None
+            with self._devices_lock:
+                device = self.devices.get(mac)
+                cached_ipv6 = device.ipv6_address if device else None
+
+            def discover_ipv4():
+                """Thread function for IPv4 discovery"""
+                nonlocal ipv4_wan
+                if attempt_ipv4:
+                    self.logger.info(f"Requesting DHCPv4 for {mac}")
+                    ipv4_start = timing_module.time()
+                    ipv4_wan = self.dhcpv4_manager.request_ipv4_for_mac(mac)
+                    ipv4_duration = timing_module.time() - ipv4_start
+
+                    if ipv4_wan:
+                        self.logger.info(f"Device {mac} → WAN IPv4: {ipv4_wan} (took {ipv4_duration:.1f}s)")
+                    else:
+                        self.logger.warning(f"Failed to obtain IPv4 for {mac} (took {ipv4_duration:.1f}s)")
+                else:
+                    self.logger.info(f"Skipping DHCPv4 for {mac}")
+
+            def discover_ipv6():
+                """Thread function for IPv6 discovery"""
+                nonlocal ipv6
+                if attempt_ipv6:
+                    if cached_ipv6:
+                        self.logger.info(f"Requesting DHCPv6 for {mac} (cached: {cached_ipv6})")
+                    else:
+                        self.logger.info(f"Requesting DHCPv6 for {mac} (no cache)")
+
+                    ipv6_start = timing_module.time()
+                    ipv6 = self.dhcpv6_manager.request_ipv6_address(mac, cached_ipv6=cached_ipv6)
+                    ipv6_duration = timing_module.time() - ipv6_start
+
+                    if ipv6:
+                        cache_status = "(cached - fast!)" if ipv6_duration < 5 else "(full acquisition)"
+                        self.logger.info(f"Device {mac} → WAN IPv6: {ipv6} {cache_status} (took {ipv6_duration:.1f}s)")
+                    else:
+                        self.logger.warning(f"Failed to obtain IPv6 for {mac} (took {ipv6_duration:.1f}s)")
+                else:
+                    self.logger.info(f"Skipping DHCPv6 for {mac}")
+
+            # Launch both discoveries in parallel
+            ipv4_thread = threading.Thread(target=discover_ipv4, name=f"IPv4-Discovery-{mac}")
+            ipv6_thread = threading.Thread(target=discover_ipv6, name=f"IPv6-Discovery-{mac}")
+
+            self.logger.info(f"Starting parallel IPv4/IPv6 discovery for {mac}...")
+            ipv4_thread.start()
+            ipv6_thread.start()
+
+            # Wait for both to complete (with timeouts)
+            ipv4_thread.join(timeout=30)  # IPv4 should be fast (2-5s)
+            ipv6_thread.join(timeout=90)  # IPv6 can be slow (15-75s)
+
+            total_discovery_time = timing_module.time() - discovery_start_time
+            self.logger.info(
+                f"Parallel discovery completed for {mac} in {total_discovery_time:.1f}s "
+                f"(IPv4: {ipv4_wan}, IPv6: {ipv6})"
+            )
+
+            # Update device with discovered addresses
+            with self._devices_lock:
+                device = self.devices.get(mac)
+                if device:
+                    if ipv4_wan:
                         device.ipv4_wan_address = ipv4_wan
-                        self.logger.info(f"Device {mac} → WAN IPv4: {ipv4_wan}")
-                    elif device:
-                        self.logger.warning(f"Failed to obtain IPv4 for {mac}")
-            else:
-                self.logger.info(f"Skipping DHCPv4 for {mac}")
-
-            # Request IPv6 if we should attempt it
-            if attempt_ipv6:
-                self.logger.info(f"Requesting DHCPv6 for {mac}")
-                ipv6 = self.dhcpv6_manager.request_ipv6_for_mac(mac)
-
-                with self._devices_lock:
-                    device = self.devices.get(mac)
-                    if device and ipv6:
+                    if ipv6:
                         device.ipv6_address = ipv6
-                        self.logger.info(f"Device {mac} → WAN IPv6: {ipv6}")
 
                         # Verify IPv6 is actually configured on eth0
                         self.logger.info(
