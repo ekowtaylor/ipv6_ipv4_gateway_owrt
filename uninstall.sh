@@ -387,18 +387,56 @@ else
     echo "     uci commit uhttpd && /etc/init.d/uhttpd restart"
 fi
 
-# Restore dropbear config from backup
+# Restore dropbear config from backup OR enable WAN access by default
 DROPBEAR_BACKUP=$(ls -t /etc/config/dropbear.backup.* 2>/dev/null | head -1)
 if [ -n "$DROPBEAR_BACKUP" ] && [ -f "$DROPBEAR_BACKUP" ]; then
     echo -e "${BLUE}  Restoring dropbear config from: $DROPBEAR_BACKUP${NC}"
     cp "$DROPBEAR_BACKUP" /etc/config/dropbear
     /etc/init.d/dropbear restart 2>/dev/null || true
-    echo -e "${GREEN}  ✓ dropbear configuration restored${NC}"
+    echo -e "${GREEN}  ✓ dropbear configuration restored from backup${NC}"
 else
-    echo -e "${YELLOW}  ⚠ No dropbear backup found - SSH may still be LAN-only${NC}"
-    echo -e "${YELLOW}  Reconfigure manually if needed:${NC}"
-    echo "     uci delete dropbear.@dropbear[0].Interface"
-    echo "     uci commit dropbear && /etc/init.d/dropbear restart"
+    echo -e "${YELLOW}  ⚠ No dropbear backup found - enabling SSH on WAN for remote access${NC}"
+
+    # Enable SSH on WAN (all interfaces) for remote management
+    if command -v uci >/dev/null 2>&1; then
+        # Remove Interface restriction (allows SSH on all interfaces including WAN)
+        uci delete dropbear.@dropbear[0].Interface 2>/dev/null || true
+
+        # Enable password authentication (useful for recovery)
+        uci set dropbear.@dropbear[0].PasswordAuth='on' 2>/dev/null || true
+
+        # Enable root login (needed for SSH)
+        uci set dropbear.@dropbear[0].RootPasswordAuth='on' 2>/dev/null || true
+
+        # Disable gateway ports (allows SSH to bind to standard port 22)
+        uci set dropbear.@dropbear[0].GatewayPorts='off' 2>/dev/null || true
+
+        # Commit and restart
+        uci commit dropbear 2>/dev/null || true
+        /etc/init.d/dropbear restart 2>/dev/null || true
+
+        echo -e "${GREEN}  ✓ SSH enabled on WAN (all interfaces) for remote access${NC}"
+        echo -e "${BLUE}  You can now SSH from WAN: ssh root@<WAN_IP>${NC}"
+    else
+        echo -e "${YELLOW}  Reconfigure manually:${NC}"
+        echo "     uci delete dropbear.@dropbear[0].Interface"
+        echo "     uci commit dropbear && /etc/init.d/dropbear restart"
+    fi
+fi
+
+# Enable telnet on WAN for remote access (if telnetd is available)
+echo -e "${BLUE}  Enabling telnet on WAN (if available)...${NC}"
+if command -v telnetd >/dev/null 2>&1; then
+    # Kill existing telnetd (might be LAN-only)
+    killall telnetd 2>/dev/null || true
+
+    # Start telnetd on all interfaces (0.0.0.0 = listen on all)
+    telnetd -l /bin/login.sh -b 0.0.0.0:23 2>/dev/null &
+
+    echo -e "${GREEN}  ✓ Telnet enabled on WAN (port 23 on all interfaces)${NC}"
+    echo -e "${BLUE}  You can now telnet from WAN: telnet <WAN_IP>${NC}"
+else
+    echo -e "${YELLOW}  ⚠ telnetd not found - install with: opkg install busybox-telnetd${NC}"
 fi
 
 echo -e "${GREEN}✓ Service stopped and disabled (where applicable)${NC}\n"
