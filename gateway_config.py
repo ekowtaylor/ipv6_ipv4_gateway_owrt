@@ -124,15 +124,15 @@ AUTO_PORT_FORWARDS = {
 ENABLE_IPV6_TO_IPV4_PROXY = True  # Enable IPv6→IPv4 proxying
 
 # IPv6→IPv4 Proxy Port Mapping
-# IMPORTANT: Only ports allowed by the upstream firewall!
-# The firewall only allows telnet (23) and HTTP (80) for IPv6 traffic.
+# Uses non-standard ports to avoid conflicts with OpenWrt LuCI
+# LuCI stays on standard ports 80/443, device proxies use 8080/2323
 # Format: {gateway_ipv6_port: device_port}
 #
 # Note: IPv6 proxying binds to the device's specific IPv6 address
-# Example: [2001:db8::1234]:80 → 192.168.1.100:80
+# Example: [2001:db8::1234]:8080 → 192.168.1.100:80
 IPV6_PROXY_PORT_FORWARDS = {
-    80: 80,  # HTTP only (firewall allows this)
-    23: 23,  # Telnet only (firewall allows this)
+    8080: 80,  # HTTP: Device:80 via IPv6:8080 (avoids LuCI on port 80)
+    2323: 23,  # Telnet: Device:23 via IPv6:2323 (avoids potential conflicts)
     # HTTPS (443), SSH (22), VNC, RDP NOT included - firewall blocks them!
 }
 # Access examples:
