@@ -623,6 +623,7 @@ class DHCPv6Manager:
                     self.logger.info(
                         f"✓ Cached IPv6 {cached_ipv6} already configured on {self.interface}"
                     )
+                    obtained_ipv6 = cached_ipv6  # CRITICAL: Set before early return!
                     return cached_ipv6
 
                 # Try to add cached IPv6
@@ -634,6 +635,9 @@ class DHCPv6Manager:
                         self.logger.info(
                             f"✓ Successfully reused cached IPv6 {cached_ipv6} "
                             f"(saved ~15s SLAAC wait)"
+                        )
+                        obtained_ipv6 = (
+                            cached_ipv6  # CRITICAL: Set before early return!
                         )
                         return cached_ipv6
                     else:
@@ -848,9 +852,10 @@ class DHCPv6Manager:
                         f"✗ Failed to configure IPv6 {obtained_ipv6} on {self.interface}"
                     )
 
-            # CRITICAL FIX: Return the obtained IPv6 from the finally block
-            # Without this, the function returns None even on success
-            return obtained_ipv6
+            # CRITICAL: Do NOT return from finally block!
+            # Early returns (lines 626, 638, 746, 761) already handle successful cases
+            # Returning here would overwrite those successful return values
+            # The finally block should only do cleanup, not return values
 
     def _verify_ipv6_present(self, ipv6: str) -> bool:
         """
