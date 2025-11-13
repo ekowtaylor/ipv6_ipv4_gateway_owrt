@@ -42,12 +42,13 @@ logger = logging.getLogger("SimpleGateway")
 
 @dataclass
 class Device:
-    """Single device information"""
+    """Device state"""
 
     mac_address: str
-    lan_ipv4: Optional[str] = None  # LAN IP (192.168.1.x)
+    lan_ipv4: Optional[str] = None  # LAN IPv4 (on 192.168.1.0/24)
     wan_ipv4: Optional[str] = None  # WAN IPv4 from DHCP
-    wan_ipv6: Optional[str] = None  # WAN IPv6 from DHCP/SLAAC
+    wan_ipv6: Optional[str] = None  # Primary WAN IPv6 (first global address)
+    wan_ipv6_all: Optional[list] = None  # All WAN IPv6 addresses (SLAAC, DHCPv6, etc.)
     discovered_at: Optional[str] = None
     last_updated: Optional[str] = None
     status: str = "unknown"  # unknown, configured, error
@@ -290,7 +291,15 @@ class SimpleGateway:
         wan_ipv6 = self._request_ipv6(mac, fast_mode=fast_reconfig)
         if wan_ipv6:
             self.device.wan_ipv6 = wan_ipv6
-            self.logger.info(f"Got WAN IPv6: {wan_ipv6}")
+            self.logger.info(f"Got WAN IPv6 (primary): {wan_ipv6}")
+
+            # Also collect ALL IPv6 addresses (SLAAC, DHCPv6, privacy extensions, etc.)
+            all_ipv6 = self._get_all_interface_ipv6(self.wan_interface)
+            if all_ipv6:
+                self.device.wan_ipv6_all = all_ipv6
+                self.logger.info(
+                    f"All WAN IPv6 addresses ({len(all_ipv6)}): {', '.join(all_ipv6)}"
+                )
 
         # Step 4: Setup port forwarding
         if wan_ipv4:
@@ -868,7 +877,10 @@ class SimpleGateway:
         return None
 
     def _get_interface_ipv6(self, interface: str) -> Optional[str]:
-        """Get global IPv6 address of interface (not link-local)"""
+        """
+        Get primary global IPv6 address of interface (not link-local)
+        Returns the first non-link-local address found
+        """
         try:
             result = subprocess.run(
                 [cfg.CMD_IP, "-6", "addr", "show", interface],
@@ -886,6 +898,31 @@ class SimpleGateway:
         except Exception:
             pass
         return None
+
+    def _get_all_interface_ipv6(self, interface: str) -> list:
+        """
+        Get ALL global IPv6 addresses of interface (not link-local)
+        Returns list of addresses (e.g., SLAAC, DHCPv6, privacy extensions)
+        """
+        addresses = []
+        try:
+            result = subprocess.run(
+                [cfg.CMD_IP, "-6", "addr", "show", interface],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            for line in result.stdout.splitlines():
+                match = re.search(r"inet6\s+([0-9a-f:]+)", line, re.I)
+                if match:
+                    addr = match.group(1)
+                    # Skip link-local (fe80::) but include all global addresses
+                    if not addr.startswith("fe80"):
+                        addresses.append(addr)
+        except Exception as e:
+            self.logger.debug(f"Error getting IPv6 addresses: {e}")
+
+        return addresses
 
     def _save_state(self):
         """Save device state to file"""
