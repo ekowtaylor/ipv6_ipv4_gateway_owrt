@@ -2560,16 +2560,102 @@ class GatewayService:
 
     # ---- Internal loops ----
 
+    def _perform_initial_network_scan(self) -> None:
+        """
+        Perform active network scan on startup to populate ARP table.
+
+        Problem: When gateway starts, ARP table may be empty even if devices are connected:
+        - Device was connected before gateway started
+        - Device hasn't sent packets recently
+        - ARP entries expire after inactivity
+
+        Solution: Actively ping the LAN subnet to populate ARP table
+        This ensures we detect devices immediately instead of waiting for them to send traffic
+        """
+        lan_interface = cfg.ETH1_INTERFACE
+
+        self.logger.info("🔍 Performing initial network scan to populate ARP table...")
+
+        # CRITICAL: Wrap entire scan in try/except with timeout to prevent hangs
+        try:
+            # Get the LAN subnet from eth1
+            result = subprocess.run(
+                [cfg.CMD_IP, "-4", "addr", "show", lan_interface],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=3,  # Add timeout to prevent hang
+            )
+
+            # Extract subnet (e.g., "192.168.1.1/24")
+            import re
+
+            match = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)/(\d+)", result.stdout)
+
+            if not match:
+                self.logger.warning(
+                    f"Could not find LAN subnet on {lan_interface}, skipping scan"
+                )
+                return
+
+            ip_addr = match.group(1)
+            prefix = int(match.group(2))
+
+            self.logger.debug(f"LAN subnet: {ip_addr}/{prefix}")
+
+            # Calculate network range (simplified - assumes /24)
+            if prefix == 24:
+                base_ip = ".".join(ip_addr.split(".")[0:3])
+
+                # Ping sweep: ping just a few likely IPs (fast and safe)
+                self.logger.debug(f"Pinging common IPs in {base_ip}.0/24...")
+
+                # SIMPLIFIED: Just ping a few likely device IPs (much faster and safer)
+                # Avoid full subnet scan which can hang on some networks
+                likely_ips = [1, 100, 101, 128, 129, 254]
+
+                for i in likely_ips:
+                    try:
+                        subprocess.run(
+                            ["ping", "-c", "1", "-W", "1", f"{base_ip}.{i}"],
+                            capture_output=True,
+                            timeout=2,  # 2 second max per ping
+                        )
+                    except (subprocess.TimeoutExpired, Exception):
+                        # Ignore failures - not critical
+                        pass
+
+                self.logger.info("✓ Initial network scan completed")
+
+            else:
+                self.logger.debug(
+                    f"Unsupported prefix /{prefix}, skipping scan (only /24 supported)"
+                )
+
+        except subprocess.TimeoutExpired:
+            self.logger.warning("Initial network scan timed out (non-critical)")
+        except Exception as e:
+            self.logger.warning(f"Initial network scan failed (non-critical): {e}")
+
+        # Wait a moment for ARP table to populate
+        try:
+            time.sleep(1)
+
+            # Log how many devices we found
+            arp_entries = self.arp_monitor.get_arp_entries()
+            self.logger.info(
+                f"✓ ARP table now has {len(arp_entries)} entries after scan"
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to check ARP entries: {e}")
+
     def _discovery_loop(self) -> None:
         """Main loop: discover new MACs and request IPv6"""
         self.logger.info("Discovery loop started (SINGLE DEVICE MODE)")
 
         # CRITICAL FIX: Active network scan on startup!
-        # Problem: When gateway starts, ARP table may be empty even if devices are connected
-        # - Device was connected before gateway started
-        # - Device hasn't sent packets recently
-        # - ARP entries expire after inactivity
-        # Solution: Actively ping the LAN subnet to populate ARP table
+        # Actively pings LAN subnet to populate ARP table
+        # Prevents needing to unplug/replug device on fresh install
         self._perform_initial_network_scan()
 
         while self.running:
