@@ -406,6 +406,33 @@ class DHCPv6Manager:
             except subprocess.CalledProcessError as e:
                 self.logger.warning(f"Failed to flush IPv6 neighbor cache: {e}")
 
+            # CRITICAL: Force Router Solicitation after MAC spoofing
+            # Many routers filter Router Advertisements by MAC address for security
+            # After MAC change, we must explicitly request RAs from the router
+            try:
+                # Enable Router Solicitation on interface
+                subprocess.run(
+                    [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.router_solicitations=3"],
+                    check=True,
+                    capture_output=True,
+                )
+                self.logger.debug(f"Enabled Router Solicitations on {self.interface}")
+
+                # Trigger immediate Router Solicitation by pinging all-routers multicast
+                # This forces the router to send a Router Advertisement to our new MAC
+                subprocess.run(
+                    ["ping6", "-c", "1", "-W", "1", "-I", self.interface, "ff02::2"],
+                    capture_output=True,
+                    timeout=2,
+                )
+                self.logger.debug(f"Sent Router Solicitation to all-routers (ff02::2)")
+            except subprocess.TimeoutExpired:
+                self.logger.debug("Router Solicitation ping timed out (expected)")
+            except subprocess.CalledProcessError as e:
+                self.logger.warning(f"Failed to send Router Solicitation: {e}")
+            except Exception as e:
+                self.logger.warning(f"Error during Router Solicitation: {e}")
+
             time.sleep(1)
 
             # Retry with exponential backoff
