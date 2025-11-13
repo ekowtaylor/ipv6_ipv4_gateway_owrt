@@ -2221,6 +2221,74 @@ class GatewayService:
                 self.logger.error(f"Error in discovery loop: {e}")
                 time.sleep(5)
 
+    def _update_wan_mac_for_device(self, mac: str) -> bool:
+        """
+        Update WAN interface MAC and all protection layers for a new device.
+        Called when switching from one device to another in SINGLE DEVICE MODE.
+
+        Updates:
+        1. eth0 MAC address
+        2. UCI configuration (persistent)
+        3. Hotplug protection file
+        4. WAN monitor protection
+
+        Returns True if successful.
+        """
+        self.logger.warning(f"🔄 Updating WAN MAC to new device: {mac}")
+
+        # 1. Update eth0 MAC address
+        if not self.eth0.bring_down():
+            self.logger.error("Failed to bring eth0 down for MAC change")
+            return False
+
+        if not self.eth0.set_mac_address(mac):
+            self.logger.error(f"Failed to set eth0 MAC to {mac}")
+            self.eth0.bring_up()
+            return False
+
+        if not self.eth0.bring_up():
+            self.logger.error("Failed to bring eth0 up after MAC change")
+            return False
+
+        self.logger.info(f"✓ Updated eth0 MAC to {mac}")
+
+        # 2. Update UCI configuration (makes it persistent across reboots)
+        try:
+            subprocess.run(
+                ["uci", "set", f"network.wan.macaddr={mac}"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["uci", "commit", "network"], check=True, capture_output=True
+            )
+            self.logger.info(f"✓ Updated UCI config to MAC {mac}")
+        except subprocess.CalledProcessError as e:
+            self.logger.warning(f"Failed to update UCI (non-critical): {e}")
+        except FileNotFoundError:
+            self.logger.debug("UCI not available (not on OpenWrt)")
+
+        # 3. Update hotplug protection file
+        try:
+            mac_file = "/etc/ipv4-ipv6-gateway/current_device_mac.txt"
+            os.makedirs(os.path.dirname(mac_file), exist_ok=True)
+            with open(mac_file, "w") as f:
+                f.write(mac)
+            self.logger.info(f"✓ Updated hotplug protection to MAC {mac}")
+        except Exception as e:
+            self.logger.warning(f"Failed to update hotplug file (non-critical): {e}")
+
+        # 4. Update WAN monitor protection
+        if self.wan_monitor:
+            self.wan_monitor.set_expected_mac(mac)
+            self.logger.info(f"✓ Updated WAN monitor to protect MAC {mac}")
+
+        # Wait for network to stabilize
+        time.sleep(2)
+
+        self.logger.warning(f"✓ WAN interface now using device MAC {mac}")
+        return True
+
     def _discover_addresses_for_device(self, mac: str) -> None:
         """
         Discover WAN addresses (IPv4 and/or IPv6) for a specific MAC address.
@@ -2228,6 +2296,8 @@ class GatewayService:
 
         IMPORTANT: On first device discovery, saves gateway's original MAC and sets
         device MAC permanently on WAN interface. Original MAC is only restored during uninstall.
+
+        On subsequent device changes (SINGLE DEVICE MODE), updates MAC and all protection layers.
         """
         try:
             with self._devices_lock:
@@ -2236,23 +2306,27 @@ class GatewayService:
                     return
                 device.status = "discovering"
 
-            # CRITICAL: Save original WAN MAC and set device MAC permanently
+            # CRITICAL: Handle MAC changes for both first device and device switching
             with self.wan_init_lock:
+                current_wan_mac = self.eth0.get_mac_address()
+
                 if not self.wan_initialized:
+                    # FIRST DEVICE - Save original gateway MAC
                     self.logger.warning(
                         f"🌐 FIRST DEVICE DETECTED! Setting permanent MAC {mac} on WAN interface"
                     )
 
                     # Get and save original gateway MAC
-                    original_mac = self.eth0.get_mac_address()
-                    if original_mac and original_mac != mac:
-                        if not self._save_original_wan_mac(original_mac):
+                    if current_wan_mac and current_wan_mac != mac:
+                        if not self._save_original_wan_mac(current_wan_mac):
                             self.logger.error("Failed to save original WAN MAC!")
                         else:
-                            self.logger.info(f"✓ Saved original WAN MAC {original_mac}")
+                            self.logger.info(
+                                f"✓ Saved original WAN MAC {current_wan_mac}"
+                            )
 
-                    # Set device MAC permanently (will be kept until uninstall)
-                    if not self.eth0.set_mac_address(mac):
+                    # Update MAC and all protection layers
+                    if not self._update_wan_mac_for_device(mac):
                         self.logger.error(
                             f"❌ CRITICAL: Failed to set WAN MAC to {mac}!"
                         )
@@ -2262,20 +2336,33 @@ class GatewayService:
                         return
 
                     self.wan_initialized = True
-                    self.logger.warning(
-                        f"✓ WAN interface permanently using device MAC {mac}"
-                    )
                     self.logger.warning(f"✓ Gateway's own MAC is HIDDEN from network")
                     self.logger.warning(
                         f"✓ Original MAC will be restored during uninstall"
                     )
 
-                    # Tell WAN monitor to maintain this MAC (prevents OpenWrt from changing it)
-                    if self.wan_monitor:
-                        self.wan_monitor.set_expected_mac(mac)
-                        self.logger.info(
-                            f"✓ WAN monitor will protect MAC {mac} from OpenWrt interference"
+                elif current_wan_mac and current_wan_mac.lower() != mac.lower():
+                    # DEVICE SWITCHING - Update to new device's MAC
+                    self.logger.warning(
+                        f"🔄 DEVICE SWITCH DETECTED! Changing from {current_wan_mac} to {mac}"
+                    )
+
+                    # Update MAC and all protection layers
+                    if not self._update_wan_mac_for_device(mac):
+                        self.logger.error(
+                            f"❌ CRITICAL: Failed to update WAN MAC to {mac}!"
                         )
+                        with self._devices_lock:
+                            if mac in self.devices:
+                                self.devices[mac].status = "failed"
+                        return
+
+                    self.logger.warning(
+                        f"✓ WAN interface switched to new device MAC {mac}"
+                    )
+                else:
+                    # Same device, MAC already correct
+                    self.logger.debug(f"WAN MAC already set to {mac}, continuing...")
 
             # Determine which protocols to attempt
             attempt_ipv4, attempt_ipv6 = self.should_attempt_protocols()

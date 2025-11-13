@@ -1,0 +1,39 @@
+#!/bin/sh
+#
+# OpenWrt hotplug script to prevent MAC changes on eth0
+# Install to: /etc/hotplug.d/iface/99-preserve-mac
+#
+
+# Only handle interface up/down events for eth0
+[ "$INTERFACE" = "eth0" ] || exit 0
+[ "$ACTION" = "ifup" ] || [ "$ACTION" = "ifupdate" ] || exit 0
+
+# Read saved device MAC (set by gateway service)
+SAVED_MAC_FILE="/etc/ipv4-ipv6-gateway/current_device_mac.txt"
+
+if [ ! -f "$SAVED_MAC_FILE" ]; then
+    # No saved MAC - let normal processing continue
+    exit 0
+fi
+
+DEVICE_MAC=$(cat "$SAVED_MAC_FILE")
+
+# Validate MAC format
+if ! echo "$DEVICE_MAC" | grep -qE '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$'; then
+    logger -t preserve-mac "Invalid MAC in $SAVED_MAC_FILE, ignoring"
+    exit 0
+fi
+
+# Get current MAC on interface
+CURRENT_MAC=$(ip link show eth0 | grep -o 'link/ether [0-9a-f:]*' | awk '{print $2}')
+
+# If MAC is different, restore device MAC
+if [ "$CURRENT_MAC" != "$DEVICE_MAC" ]; then
+    logger -t preserve-mac "Restoring device MAC $DEVICE_MAC (was $CURRENT_MAC)"
+    ip link set eth0 down
+    ip link set eth0 address "$DEVICE_MAC"
+    ip link set eth0 up
+    logger -t preserve-mac "MAC restored to $DEVICE_MAC"
+fi
+
+exit 0
