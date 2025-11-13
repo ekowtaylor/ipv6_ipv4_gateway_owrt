@@ -579,6 +579,71 @@ class DHCPv6Manager:
         self.logger = logging.getLogger("DHCPv6Manager")
         self.iface = NetworkInterface(interface)
 
+    def discover_ipv6_from_neighbor_table(self, mac: str) -> Optional[str]:
+        """
+        Discover device's IPv6 address by querying router's IPv6 neighbor table.
+
+        This is the AUTHORITATIVE way to find the device's IPv6 address!
+        The router's neighbor discovery protocol (NDP) cache shows what IPv6
+        addresses the router actually knows for this device.
+
+        This is better than DHCPv6 discovery because:
+        - Router is the source of truth
+        - Works even if device got IPv6 via SLAAC (not DHCPv6)
+        - Gets the ACTUAL address router is routing to
+        - Avoids MAC spoofing issues (we just query, don't spoof)
+
+        Args:
+            mac: Device MAC address to look up
+
+        Returns:
+            IPv6 address if found in neighbor table, None otherwise
+        """
+        try:
+            # Query IPv6 neighbor table (NDP cache)
+            # Format: fe80::1234 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE
+            result = subprocess.run(
+                [cfg.CMD_IP, "-6", "neigh", "show", "dev", self.interface],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            ipv6_addresses = []
+            for line in result.stdout.splitlines():
+                # Check if this line is for our MAC address
+                if mac.lower() in line.lower():
+                    # Extract IPv6 address (first field)
+                    parts = line.split()
+                    if parts:
+                        ipv6 = parts[0]
+                        # Skip link-local addresses (fe80::)
+                        if not ipv6.lower().startswith("fe80:"):
+                            ipv6_addresses.append(ipv6)
+                            self.logger.info(
+                                f"Found IPv6 {ipv6} for MAC {mac} in neighbor table"
+                            )
+
+            if ipv6_addresses:
+                # Return the first global IPv6 address
+                selected = ipv6_addresses[0]
+                self.logger.info(
+                    f"✓ Discovered IPv6 from neighbor table: {selected} (MAC: {mac})"
+                )
+                return selected
+            else:
+                self.logger.debug(
+                    f"No global IPv6 addresses found for MAC {mac} in neighbor table"
+                )
+                return None
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Failed to query IPv6 neighbor table: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error discovering IPv6 from neighbor table: {e}")
+            return None
+
     def request_ipv6_address(
         self, mac: str, cached_ipv6: Optional[str] = None
     ) -> Optional[str]:
@@ -651,10 +716,27 @@ class DHCPv6Manager:
                         f"falling back to full acquisition"
                     )
 
-            # Full IPv6 acquisition (SLAAC/DHCPv6)
+            # STRATEGY 1: Try to discover IPv6 from router's neighbor table FIRST!
+            # This is the most authoritative and reliable method:
+            # - Gets the ACTUAL IPv6 the router knows about
+            # - No MAC spoofing needed (just query)
+            # - Works even if device got IPv6 via SLAAC (not DHCPv6)
+            # - Much faster than full SLAAC/DHCPv6 cycle
+            self.logger.info(f"Attempting neighbor table discovery for MAC {mac}...")
+            neighbor_ipv6 = self.discover_ipv6_from_neighbor_table(mac)
+
+            if neighbor_ipv6:
+                self.logger.info(
+                    f"✓ SUCCESS! Found IPv6 from neighbor table: {neighbor_ipv6} "
+                    f"(saved ~15-75s by skipping SLAAC/DHCPv6!)"
+                )
+                obtained_ipv6 = neighbor_ipv6
+                return neighbor_ipv6
+
+            # STRATEGY 2: Neighbor table didn't have IPv6, fall back to full SLAAC/DHCPv6
             self.logger.info(
-                f"Performing full IPv6 acquisition for MAC {mac} "
-                f"(no cache or MAC changed)"
+                f"Neighbor table had no IPv6 for MAC {mac} - "
+                f"performing full IPv6 acquisition (SLAAC/DHCPv6)"
             )
 
             self.iface.flush_ipv6_addresses()
