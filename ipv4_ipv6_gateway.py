@@ -296,9 +296,9 @@ class SimpleGateway:
         if wan_ipv4:
             self._setup_ipv4_port_forwarding(lan_ip, wan_ipv4)
 
-        # Step 5: Setup IPv6 proxy if needed
-        if wan_ipv6 and not wan_ipv4:
-            # IPv6-only network, setup proxy
+        # Step 5: Setup IPv6 proxy (always, when IPv6 is available)
+        # This allows IPv6 clients to access the device even on dual-stack networks
+        if wan_ipv6:
             self._setup_ipv6_proxy(mac, lan_ip, wan_ipv6)
 
         # Mark as configured

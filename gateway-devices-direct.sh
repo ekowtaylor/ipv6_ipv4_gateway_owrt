@@ -1,26 +1,32 @@
 #!/bin/sh
 #
-# Direct gateway devices list (no REST API needed)
+# Direct gateway device info (no REST API needed)
 # Works from console/KVM without network
+# Single-device mode: shows the ONE configured device
 #
 
-DEVICES_FILE="/etc/ipv4-ipv6-gateway/devices.json"
+DEVICE_FILE="/etc/ipv4-ipv6-gateway/device.json"
 
-if [ ! -f "$DEVICES_FILE" ]; then
-    echo "No devices file found at $DEVICES_FILE"
+if [ ! -f "$DEVICE_FILE" ]; then
+    echo "No device configured"
     echo ""
     echo "Possible reasons:"
     echo "  - Gateway service not started yet"
-    echo "  - No devices have been discovered"
-    echo "  - Service hasn't written device store yet"
+    echo "  - No device connected to LAN"
+    echo "  - Device not yet discovered"
     exit 1
 fi
+
+echo "================================"
+echo "CONFIGURED DEVICE"
+echo "================================"
+echo ""
 
 # Check if we have Python for pretty printing
 if command -v python3 >/dev/null 2>&1; then
     # Pretty print with Python
-    cat "$DEVICES_FILE" | python3 -m json.tool
+    cat "$DEVICE_FILE" | python3 -m json.tool
 else
     # Fallback to raw JSON
-    cat "$DEVICES_FILE"
+    cat "$DEVICE_FILE"
 fi

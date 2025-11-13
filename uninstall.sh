@@ -93,11 +93,10 @@ fi
 echo -e "${BLUE}- Restoring original MAC address on eth0 (if saved)...${NC}"
 
 # Try to find saved original MAC from device store
-if [ -f "$CONFIG_DIR/devices.json" ]; then
+if [ -f "$CONFIG_DIR/device.json" ]; then
     # Extract any MAC that was saved before spoofing
-    # The gateway stores its work in devices.json, but original MAC isn't there
-    # So we'll try to get it from the network backup if available
-    echo -e "${BLUE}  Checking for saved original MAC...${NC}"
+    # The gateway stores its work in device.json (single-device mode)
+    echo -e "${BLUE}  Checking for saved device MAC...${NC}"
 fi
 
 # Check if there's a network interface backup with original MAC
