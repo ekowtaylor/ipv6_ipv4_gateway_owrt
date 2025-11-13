@@ -177,11 +177,14 @@ class SimpleGateway:
 
             # Parse ARP output
             # Format: 192.168.1.100 lladdr aa:bb:cc:dd:ee:ff REACHABLE
+            # OR:     192.168.1.100 lladdr aa:bb:cc:dd:ee:ff STALE
+            # OR:     192.168.1.100 lladdr aa:bb:cc:dd:ee:ff DELAY
             for line in result.stdout.splitlines():
                 parts = line.split()
                 self.logger.debug(f"ARP line: {line} -> Parts: {parts}")
 
-                if len(parts) >= 5 and parts[2] == "lladdr":
+                # Changed from >= 5 to >= 4 to handle entries without state
+                if len(parts) >= 4 and parts[2] == "lladdr":
                     ip = parts[0]
                     mac = parts[3].lower()
 
@@ -190,7 +193,7 @@ class SimpleGateway:
                         self.logger.debug(f"Skipping gateway IP: {ip}")
                         continue
 
-                    # Found a device!
+                    # Found a device! (Don't care about state - REACHABLE/STALE/DELAY all OK)
                     self.logger.info(f"Found device in ARP: {mac} at {ip}")
                     return (mac, ip)
 
@@ -549,7 +552,44 @@ class SimpleGateway:
         time.sleep(1)  # Let socat start
 
     def _stop_proxy(self, mac: str):
-        """Stop all socat proxies"""
+        """Stop all socat proxies and remove IPv6 SNAT rules"""
+        self.logger.info("Stopping IPv6 proxies and cleaning up SNAT rules")
+
+        # Remove IPv6 SNAT rules first
+        if self.device and self.device.lan_ipv4:
+            lan_ip = self.device.lan_ipv4
+            for device_port in cfg.IPV6_PROXY_PORTS.values():
+                try:
+                    subprocess.run(
+                        [
+                            "ip6tables",
+                            "-t",
+                            "nat",
+                            "-D",
+                            "POSTROUTING",
+                            "-d",
+                            lan_ip,
+                            "-p",
+                            "tcp",
+                            "--dport",
+                            str(device_port),
+                            "-j",
+                            "SNAT",
+                            "--to-source",
+                            cfg.LAN_GATEWAY_IP,
+                        ],
+                        capture_output=True,
+                        timeout=2,
+                    )
+                    self.logger.info(
+                        f"Removed IPv6 SNAT rule for {lan_ip}:{device_port}"
+                    )
+                except Exception as e:
+                    self.logger.debug(
+                        f"Failed to remove SNAT rule for port {device_port}: {e}"
+                    )
+
+        # Kill socat processes
         try:
             # Find socat processes
             result = subprocess.run(["ps", "-w"], capture_output=True, text=True)
