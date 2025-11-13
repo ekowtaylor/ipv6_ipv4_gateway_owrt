@@ -867,29 +867,88 @@ if [ "$APPLY_NETWORK" = true ]; then
         uci export dhcp > /tmp/dhcp.backup.uci.tmp || true
         echo -e "${GREEN}✓ Backup created${NC}"
 
-        echo -e "${BLUE}Importing network configuration...${NC}"
-        uci import network < "$CONFIG_DIR/network-config.uci" || {
-            echo -e "${RED}⚠ Failed to import network config${NC}"
-            echo -e "${YELLOW}Manual import: uci import network < $CONFIG_DIR/network-config.uci${NC}"
-        }
+        echo -e "${BLUE}Configuring network interfaces...${NC}"
 
-        echo -e "${BLUE}Importing DHCP configuration...${NC}"
-        uci import dhcp < "$CONFIG_DIR/dhcp-config.uci" || {
-            echo -e "${RED}⚠ Failed to import DHCP config${NC}"
-            echo -e "${YELLOW}Manual import: uci import dhcp < $CONFIG_DIR/dhcp-config.uci${NC}"
-        }
+        # Configure LAN (eth1) interface
+        uci set network.lan=interface
+        uci set network.lan.device='eth1'
+        uci set network.lan.proto='static'
+        uci set network.lan.ipaddr='192.168.1.1'
+        uci set network.lan.netmask='255.255.255.0'
 
-        echo -e "${BLUE}Committing changes...${NC}"
-        uci commit || echo -e "${RED}⚠ Failed to commit UCI changes${NC}"
+        # Configure WAN (eth0) interface
+        uci set network.wan=interface
+        uci set network.wan.device='eth0'
+        uci set network.wan.proto='dhcp'
+
+        # Configure WAN6 (IPv6 on eth0)
+        uci set network.wan6=interface
+        uci set network.wan6.device='eth0'
+        uci set network.wan6.proto='dhcpv6'
+        uci set network.wan6.reqaddress='try'
+        uci set network.wan6.reqprefix='auto'
+
+        # Commit network changes
+        uci commit network
+        echo -e "${GREEN}✓ Network configuration applied${NC}"
+
+        echo -e "${BLUE}Configuring DHCP server...${NC}"
+
+        # Configure dnsmasq global settings
+        uci set dhcp.@dnsmasq[0]=dnsmasq
+        uci set dhcp.@dnsmasq[0].domainneeded='1'
+        uci set dhcp.@dnsmasq[0].boguspriv='1'
+        uci set dhcp.@dnsmasq[0].localise_queries='1'
+        uci set dhcp.@dnsmasq[0].rebind_protection='1'
+        uci set dhcp.@dnsmasq[0].rebind_localhost='1'
+        uci set dhcp.@dnsmasq[0].local='/lan/'
+        uci set dhcp.@dnsmasq[0].domain='lan'
+        uci set dhcp.@dnsmasq[0].expandhosts='1'
+        uci set dhcp.@dnsmasq[0].authoritative='1'
+        uci set dhcp.@dnsmasq[0].readethers='1'
+        uci set dhcp.@dnsmasq[0].leasefile='/tmp/dhcp.leases'
+
+        # Configure DHCP for LAN
+        uci set dhcp.lan=dhcp
+        uci set dhcp.lan.interface='lan'
+        uci set dhcp.lan.start='100'
+        uci set dhcp.lan.limit='150'
+        uci set dhcp.lan.leasetime='12h'
+        uci set dhcp.lan.dhcpv4='server'
+        uci set dhcp.lan.dhcpv6='disabled'
+        uci set dhcp.lan.ra='disabled'
+
+        # Disable DHCP on WAN
+        uci set dhcp.wan=dhcp
+        uci set dhcp.wan.interface='wan'
+        uci set dhcp.wan.ignore='1'
+
+        # Commit DHCP changes
+        uci commit dhcp
+        echo -e "${GREEN}✓ DHCP configuration applied${NC}"
 
         echo -e "${BLUE}Restarting network...${NC}"
         /etc/init.d/network restart || echo -e "${RED}⚠ Failed to restart network${NC}"
         sleep 3
 
-        echo -e "${BLUE}Restarting DHCP server (dnsmasq)...${NC}"
+        echo -e "${BLUE}Starting/Restarting DHCP server (dnsmasq)...${NC}"
+        /etc/init.d/dnsmasq enable || echo -e "${RED}⚠ Failed to enable dnsmasq${NC}"
         /etc/init.d/dnsmasq restart || echo -e "${RED}⚠ Failed to restart dnsmasq${NC}"
+        sleep 2
 
-        echo -e "${GREEN}✓ Network configuration applied${NC}"
+        echo -e "${GREEN}✓ Network and DHCP configuration complete${NC}"
+
+        # Verify configuration
+        echo -e "${BLUE}Verifying configuration...${NC}"
+        echo -e "${BLUE}  eth1 IP address:${NC}"
+        ip addr show eth1 | grep "inet " || echo -e "${RED}    ✗ eth1 has no IPv4 address${NC}"
+        echo -e "${BLUE}  dnsmasq status:${NC}"
+        if ps | grep -v grep | grep -q dnsmasq; then
+            echo -e "${GREEN}    ✓ dnsmasq is running${NC}"
+        else
+            echo -e "${RED}    ✗ dnsmasq is NOT running${NC}"
+        fi
+
         echo -e "${YELLOW}⚠ If you lost SSH connection, reconnect to 192.168.1.1${NC}"
     else
         echo -e "${YELLOW}UCI not found (not OpenWrt?). Skipping network config.${NC}"
