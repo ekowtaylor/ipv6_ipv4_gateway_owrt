@@ -597,7 +597,13 @@ class SimpleGateway:
                 self.logger.warning(f"Failed to setup port forward {gateway_port}: {e}")
 
     def _setup_ipv6_proxy(self, mac: str, lan_ip: str, wan_ipv6: str):
-        """Setup IPv6→IPv4 proxy using socat with SNAT for return traffic"""
+        """
+        Setup IPv6→IPv4 proxy using socat
+
+        Note: We bind socat to the WAN IPv6 address, which means the device
+        will see connections from the IPv6 client's address (not the gateway).
+        This works fine for most protocols.
+        """
         self.logger.info(f"Setting up IPv6→IPv4 proxy for {lan_ip}")
 
         # Kill existing socat processes for this device
@@ -605,66 +611,8 @@ class SimpleGateway:
 
         for ipv6_port, device_port in cfg.IPV6_PROXY_PORTS.items():
             try:
-                # CRITICAL FIX: Add ip6tables SNAT rule for return traffic
-                # Without this, device sees requests from IPv6 address and can't respond
-                # With this, device sees requests from gateway LAN IP (192.168.1.1)
-
-                # Remove existing rule (if any)
-                try:
-                    subprocess.run(
-                        [
-                            "ip6tables",
-                            "-t",
-                            "nat",
-                            "-D",
-                            "POSTROUTING",
-                            "-d",
-                            lan_ip,
-                            "-p",
-                            "tcp",
-                            "--dport",
-                            str(device_port),
-                            "-j",
-                            "SNAT",
-                            "--to-source",
-                            cfg.LAN_GATEWAY_IP,
-                        ],
-                        capture_output=True,
-                        timeout=2,
-                    )
-                except:
-                    pass  # Rule doesn't exist yet
-
-                # Add SNAT rule for this port
-                subprocess.run(
-                    [
-                        "ip6tables",
-                        "-t",
-                        "nat",
-                        "-A",
-                        "POSTROUTING",
-                        "-d",
-                        lan_ip,
-                        "-p",
-                        "tcp",
-                        "--dport",
-                        str(device_port),
-                        "-j",
-                        "SNAT",
-                        "--to-source",
-                        cfg.LAN_GATEWAY_IP,
-                    ],
-                    check=True,
-                    timeout=5,
-                )
-
-                self.logger.info(
-                    f"Added ip6tables SNAT rule for {lan_ip}:{device_port} (via {cfg.LAN_GATEWAY_IP})"
-                )
-
                 # Start socat in background
                 # IPv6 client → [wan_ipv6]:ipv6_port → socat → lan_ip:device_port
-                # Device sees traffic from 192.168.1.1 due to SNAT rule
                 cmd = [
                     cfg.CMD_SOCAT,
                     f"TCP6-LISTEN:{ipv6_port},bind=[{wan_ipv6}],fork,reuseaddr",
@@ -680,13 +628,9 @@ class SimpleGateway:
                 )
 
                 self.logger.info(
-                    f"IPv6 proxy: [{wan_ipv6}]:{ipv6_port} → {lan_ip}:{device_port} (with SNAT)"
+                    f"IPv6 proxy: [{wan_ipv6}]:{ipv6_port} → {lan_ip}:{device_port}"
                 )
 
-            except subprocess.CalledProcessError as e:
-                self.logger.warning(
-                    f"Failed to setup IPv6 proxy on port {ipv6_port}: {e}"
-                )
             except Exception as e:
                 self.logger.warning(
                     f"Error setting up IPv6 proxy on port {ipv6_port}: {e}"

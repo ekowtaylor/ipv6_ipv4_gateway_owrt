@@ -71,6 +71,7 @@ CMD_IP = "/usr/bin/ip"
 CMD_UDHCPC = "/sbin/udhcpc"
 CMD_ODHCP6C = "/usr/sbin/odhcp6c"
 CMD_IPTABLES = "/usr/sbin/iptables"
+CMD_IP6TABLES = "/usr/sbin/ip6tables"
 CMD_SOCAT = "/usr/bin/socat"
 
 
