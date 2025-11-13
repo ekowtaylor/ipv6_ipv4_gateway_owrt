@@ -22,17 +22,29 @@ LOG_FILE = "/var/log/ipv4-ipv6-gateway.log"
 STATE_FILE = "/etc/ipv4-ipv6-gateway/device.json"
 
 # Check interval (seconds)
-CHECK_INTERVAL = 15  # Check for new device every 15 seconds
+CHECK_INTERVAL = 2  # Check for device/WAN changes every 2 seconds (fast detection!)
 
 # Monitor WAN for network changes
 MONITOR_WAN_CHANGES = True
 
-# DHCP settings
-DHCPV4_TIMEOUT = 15  # seconds per attempt
-DHCPV4_RETRIES = 10  # total attempts (handles firewall MAC registration lag)
+# DHCP settings - Initial configuration (first time device connects)
+DHCPV4_TIMEOUT = 10  # seconds per attempt (reduced from 15)
+DHCPV4_RETRIES = 8  # total attempts (reduced from 10)
 
-DHCPV6_TIMEOUT = 10  # seconds per attempt
-DHCPV6_RETRIES = 5  # total attempts
+DHCPV6_TIMEOUT = 8  # seconds per attempt (reduced from 10)
+DHCPV6_RETRIES = 4  # total attempts (reduced from 5)
+
+# DHCP settings - Fast reconfiguration (WAN change, MAC already registered on firewall)
+# These are MUCH faster since the MAC is already whitelisted
+DHCPV4_TIMEOUT_FAST = 3  # seconds per attempt (very fast!)
+DHCPV4_RETRIES_FAST = 2  # only 2 attempts needed
+
+DHCPV6_TIMEOUT_FAST = 3  # seconds per attempt (very fast!)
+DHCPV6_RETRIES_FAST = 2  # only 2 attempts needed
+
+# SLAAC wait time
+SLAAC_WAIT_TIME = 2  # seconds to wait for Router Advertisement (reduced from 3)
+SLAAC_WAIT_TIME_FAST = 1  # seconds for fast reconfig (RA cache likely exists)
 
 # Port forwarding (IPv4 NAT)
 # Format: {gateway_port: device_port}

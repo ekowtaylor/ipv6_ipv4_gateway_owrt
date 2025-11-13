@@ -123,13 +123,13 @@ class SimpleGateway:
                     # No device found in ARP
                     if self.device:
                         # Check how long device has been gone
-                        # Only cleanup if gone for 2+ check cycles (avoid flapping)
+                        # Only cleanup if gone for 1+ check cycles (2 seconds with CHECK_INTERVAL=2)
                         if not hasattr(self, "_device_missing_count"):
                             self._device_missing_count = 0
 
                         self._device_missing_count += 1
 
-                        if self._device_missing_count >= 2:
+                        if self._device_missing_count >= 1:  # Faster cleanup!
                             self.logger.warning(
                                 f"Device {self.device.mac_address} disconnected - cleaning up"
                             )
@@ -151,12 +151,13 @@ class SimpleGateway:
                 ):
                     if self._wan_network_changed():
                         self.logger.warning(
-                            "WAN network changed - reconfiguring device"
+                            "WAN network changed - reconfiguring device (fast mode)"
                         )
                         # Use threading to avoid blocking the main loop
+                        # Use fast_reconfig=True since MAC is already registered
                         reconfig_thread = threading.Thread(
                             target=self._configure_device,
-                            args=(self.device.mac_address, self.device.lan_ipv4),
+                            args=(self.device.mac_address, self.device.lan_ipv4, True),
                             daemon=True,
                         )
                         reconfig_thread.start()
@@ -257,28 +258,36 @@ class SimpleGateway:
             self.logger.error(f"Failed to get ARP entries: {e}")
             return None
 
-    def _configure_device(self, mac: str, lan_ip: str):
-        """Configure WAN access for the device"""
-        self.logger.info(f"Configuring device {mac} ({lan_ip})")
+    def _configure_device(self, mac: str, lan_ip: str, fast_reconfig: bool = False):
+        """
+        Configure WAN access for the device
+
+        Args:
+            mac: Device MAC address
+            lan_ip: Device LAN IP
+            fast_reconfig: If True, use faster timeouts (MAC already registered)
+        """
+        mode = "fast reconfig" if fast_reconfig else "initial config"
+        self.logger.info(f"Configuring device {mac} ({lan_ip}) - {mode}")
 
         # Create/update device object
         self.device = Device(mac_address=mac, lan_ipv4=lan_ip, status="configuring")
         self._save_state()
 
         # Step 1: Spoof MAC on WAN interface
-        if not self._spoof_mac(mac):
+        if not self._spoof_mac(mac, fast_mode=fast_reconfig):
             self.device.status = "error"
             self._save_state()
             return
 
         # Step 2: Get DHCPv4 if available
-        wan_ipv4 = self._request_dhcpv4(mac)
+        wan_ipv4 = self._request_dhcpv4(mac, fast_mode=fast_reconfig)
         if wan_ipv4:
             self.device.wan_ipv4 = wan_ipv4
             self.logger.info(f"Got WAN IPv4: {wan_ipv4}")
 
         # Step 3: Get IPv6 (SLAAC or DHCPv6)
-        wan_ipv6 = self._request_ipv6(mac)
+        wan_ipv6 = self._request_ipv6(mac, fast_mode=fast_reconfig)
         if wan_ipv6:
             self.device.wan_ipv6 = wan_ipv6
             self.logger.info(f"Got WAN IPv6: {wan_ipv6}")
@@ -297,48 +306,98 @@ class SimpleGateway:
         self.device.last_updated = datetime.now().isoformat()
         self._save_state()
 
-        self.logger.info(f"Device {mac} configured successfully")
+        self.logger.info(f"Device {mac} configured successfully ({mode})")
         self._print_status()
 
-    def _spoof_mac(self, mac: str) -> bool:
-        """Spoof MAC on WAN interface"""
+    def _spoof_mac(self, mac: str, fast_mode: bool = False) -> bool:
+        """
+        Spoof MAC on WAN interface
+
+        Args:
+            mac: MAC address to spoof
+            fast_mode: If True, use minimal wait time
+        """
         self.logger.info(f"Spoofing WAN MAC to {mac}")
 
-        # Bring interface down
         try:
+            # Step 1: Bring interface down
             subprocess.run(
                 [cfg.CMD_IP, "link", "set", self.wan_interface, "down"],
                 check=True,
                 capture_output=True,
             )
 
-            # Set MAC
+            # Step 2: Flush ALL IPv6 addresses from interface (critical!)
+            # This removes old SLAAC addresses generated from previous MAC
+            subprocess.run(
+                [cfg.CMD_IP, "-6", "addr", "flush", "dev", self.wan_interface],
+                check=True,
+                capture_output=True,
+            )
+            self.logger.info(f"Flushed old IPv6 addresses from {self.wan_interface}")
+
+            # Step 3: Flush IPv4 addresses too
+            subprocess.run(
+                [cfg.CMD_IP, "-4", "addr", "flush", "dev", self.wan_interface],
+                check=True,
+                capture_output=True,
+            )
+
+            # Step 4: Set new MAC
             subprocess.run(
                 [cfg.CMD_IP, "link", "set", self.wan_interface, "address", mac],
                 check=True,
                 capture_output=True,
             )
+            self.logger.info(f"Set WAN MAC to {mac}")
 
-            # Bring interface up
+            # Step 5: Bring interface up
             subprocess.run(
                 [cfg.CMD_IP, "link", "set", self.wan_interface, "up"],
                 check=True,
                 capture_output=True,
             )
 
-            time.sleep(2)  # Wait for interface to come up
-            return True
+            # Wait for interface to come up and link negotiation
+            # Fast mode: 0.5s (MAC already registered, just need link up)
+            # Normal mode: 2s (wait for link negotiation + firewall registration)
+            wait_time = 0.5 if fast_mode else 2
+            self.logger.info(f"Waiting {wait_time}s for interface to come up...")
+            time.sleep(wait_time)
+
+            # Verify MAC was set correctly
+            current_mac = self._get_interface_mac(self.wan_interface)
+            if current_mac and current_mac.lower() == mac.lower():
+                self.logger.info(f"MAC spoofing successful: {current_mac}")
+                return True
+            else:
+                self.logger.error(
+                    f"MAC spoofing failed: expected {mac}, got {current_mac}"
+                )
+                return False
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to spoof MAC: {e}")
             return False
 
-    def _request_dhcpv4(self, mac: str) -> Optional[str]:
-        """Request DHCPv4 address"""
-        self.logger.info(f"Requesting DHCPv4 for {mac}")
+    def _request_dhcpv4(self, mac: str, fast_mode: bool = False) -> Optional[str]:
+        """
+        Request DHCPv4 address
 
-        for attempt in range(1, cfg.DHCPV4_RETRIES + 1):
-            self.logger.info(f"DHCPv4 attempt {attempt}/{cfg.DHCPV4_RETRIES}")
+        Args:
+            mac: Device MAC address
+            fast_mode: Use faster timeouts (for reconfiguration)
+        """
+        retries = cfg.DHCPV4_RETRIES_FAST if fast_mode else cfg.DHCPV4_RETRIES
+        timeout = cfg.DHCPV4_TIMEOUT_FAST if fast_mode else cfg.DHCPV4_TIMEOUT
+        mode_str = "fast" if fast_mode else "normal"
+
+        self.logger.info(
+            f"Requesting DHCPv4 for {mac} ({mode_str} mode: {retries} retries, {timeout}s timeout)"
+        )
+
+        for attempt in range(1, retries + 1):
+            self.logger.info(f"DHCPv4 attempt {attempt}/{retries}")
 
             try:
                 # Use udhcpc to request DHCP
@@ -350,13 +409,13 @@ class SimpleGateway:
                         "-n",  # Exit if lease not obtained
                         "-q",  # Quit after obtaining lease
                         "-t",
-                        str(cfg.DHCPV4_RETRIES),
+                        str(retries),
                         "-T",
-                        str(cfg.DHCPV4_TIMEOUT),
+                        str(timeout),
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=cfg.DHCPV4_TIMEOUT + 5,
+                    timeout=timeout + 5,
                 )
 
                 if result.returncode == 0:
@@ -369,21 +428,37 @@ class SimpleGateway:
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 self.logger.warning(f"DHCPv4 attempt {attempt} failed: {e}")
 
-            # Exponential backoff
-            if attempt < cfg.DHCPV4_RETRIES:
-                delay = min(2**attempt, 30)
+            # Exponential backoff (faster in fast mode)
+            if attempt < retries:
+                if fast_mode:
+                    delay = 1  # Fixed 1 second in fast mode
+                else:
+                    delay = min(2**attempt, 30)  # Exponential in normal mode
                 time.sleep(delay)
 
-        self.logger.warning("DHCPv4 failed after all retries")
+        self.logger.warning(f"DHCPv4 failed after all retries ({mode_str} mode)")
         return None
 
-    def _request_ipv6(self, mac: str) -> Optional[str]:
-        """Request IPv6 via SLAAC or DHCPv6"""
-        self.logger.info(f"Requesting IPv6 for {mac}")
+    def _request_ipv6(self, mac: str, fast_mode: bool = False) -> Optional[str]:
+        """
+        Request IPv6 via SLAAC or DHCPv6
+
+        Args:
+            mac: Device MAC address
+            fast_mode: Use faster timeouts (for reconfiguration)
+        """
+        retries = cfg.DHCPV6_RETRIES_FAST if fast_mode else cfg.DHCPV6_RETRIES
+        timeout = cfg.DHCPV6_TIMEOUT_FAST if fast_mode else cfg.DHCPV6_TIMEOUT
+        slaac_wait = cfg.SLAAC_WAIT_TIME_FAST if fast_mode else cfg.SLAAC_WAIT_TIME
+        mode_str = "fast" if fast_mode else "normal"
+
+        self.logger.info(f"Requesting IPv6 for {mac} ({mode_str} mode)")
 
         # Try SLAAC first
-        self.logger.info("Trying SLAAC (waiting for Router Advertisement)...")
-        time.sleep(3)  # Wait for RA
+        self.logger.info(
+            f"Trying SLAAC (waiting {slaac_wait}s for Router Advertisement)..."
+        )
+        time.sleep(slaac_wait)  # Wait for RA
 
         ipv6 = self._get_interface_ipv6(self.wan_interface)
         if ipv6:
@@ -391,10 +466,12 @@ class SimpleGateway:
             return ipv6
 
         # Fall back to DHCPv6
-        self.logger.info("SLAAC failed, trying DHCPv6...")
+        self.logger.info(
+            f"SLAAC failed, trying DHCPv6 ({retries} retries, {timeout}s timeout)..."
+        )
 
-        for attempt in range(1, cfg.DHCPV6_RETRIES + 1):
-            self.logger.info(f"DHCPv6 attempt {attempt}/{cfg.DHCPV6_RETRIES}")
+        for attempt in range(1, retries + 1):
+            self.logger.info(f"DHCPv6 attempt {attempt}/{retries}")
 
             try:
                 result = subprocess.run(
@@ -403,13 +480,13 @@ class SimpleGateway:
                         "-s",
                         "/bin/true",  # Don't run script
                         "-t",
-                        str(cfg.DHCPV6_TIMEOUT),
+                        str(timeout),
                         "-v",
                         self.wan_interface,
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=cfg.DHCPV6_TIMEOUT + 5,
+                    timeout=timeout + 5,
                 )
 
                 if result.returncode == 0:
@@ -421,11 +498,15 @@ class SimpleGateway:
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
                 self.logger.warning(f"DHCPv6 attempt {attempt} failed: {e}")
 
-            if attempt < cfg.DHCPV6_RETRIES:
-                delay = min(2**attempt, 20)
+            # Backoff (faster in fast mode)
+            if attempt < retries:
+                if fast_mode:
+                    delay = 1  # Fixed 1 second in fast mode
+                else:
+                    delay = min(2**attempt, 20)  # Exponential in normal mode
                 time.sleep(delay)
 
-        self.logger.warning("IPv6 acquisition failed")
+        self.logger.warning(f"IPv6 acquisition failed ({mode_str} mode)")
         return None
 
     def _setup_ipv4_port_forwarding(self, lan_ip: str, wan_ip: str):
