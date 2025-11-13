@@ -633,10 +633,14 @@ class DHCPv6Manager:
 
     def _enable_proxy_ndp(self, ipv6: str) -> bool:
         """
-        Enable IPv6 Proxy NDP for the given address.
+        Enable IPv6 Proxy NDP for the given address AND advertise to router.
 
-        This tells the kernel to respond to Neighbor Discovery requests
-        for this IPv6 address, even though it's not the "primary" address.
+        This does THREE critical things:
+        1. Enables Proxy NDP - kernel responds to neighbor discovery for this IPv6
+        2. Enables global proxy_ndp sysctl settings
+        3. Sends Neighbor Advertisement to router - announces the IPv6 address
+
+        Without step 3, the router won't know about this IPv6 and can't route to it!
 
         Args:
             ipv6: IPv6 address to enable proxy NDP for
@@ -644,6 +648,23 @@ class DHCPv6Manager:
         Returns:
             True if successful
         """
+        # Step 1: Enable global proxy_ndp sysctls (must be done first!)
+        try:
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", "net.ipv6.conf.all.proxy_ndp=1"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.proxy_ndp=1"],
+                check=True,
+                capture_output=True,
+            )
+            self.logger.debug(f"Enabled global proxy_ndp for {self.interface}")
+        except subprocess.CalledProcessError as e:
+            self.logger.warning(f"Failed to enable global proxy_ndp: {e}")
+
+        # Step 2: Add proxy NDP entry for this specific IPv6
         try:
             subprocess.run(
                 [
@@ -660,15 +681,35 @@ class DHCPv6Manager:
                 capture_output=True,
             )
             self.logger.debug(f"Enabled Proxy NDP for {ipv6} on {self.interface}")
-            return True
         except subprocess.CalledProcessError as e:
             # Check if it already exists (exit code 2)
             if e.returncode == 2:
                 self.logger.debug(f"Proxy NDP already enabled for {ipv6}")
-                return True
             else:
                 self.logger.error(f"Failed to enable Proxy NDP for {ipv6}: {e}")
                 return False
+
+        # Step 3: CRITICAL - Send Neighbor Advertisement to router!
+        # This announces the IPv6 address so the router knows we have it
+        # Without this, the router won't route traffic to this IPv6
+        try:
+            # Send ping6 to all-nodes multicast to trigger neighbor discovery
+            # This makes the router learn about our IPv6 address
+            self.logger.info(
+                f"Advertising IPv6 {ipv6} to router via Neighbor Advertisement..."
+            )
+            subprocess.run(
+                ["ping6", "-c", "2", "-I", self.interface, "ff02::1"],
+                capture_output=True,
+                timeout=3,
+            )
+            self.logger.info(f"✓ Advertised IPv6 {ipv6} to router")
+        except subprocess.TimeoutExpired:
+            self.logger.debug("Neighbor Advertisement ping timeout (expected)")
+        except Exception as e:
+            self.logger.warning(f"Failed to send Neighbor Advertisement: {e}")
+
+        return True
 
     def _request_dhcpv6(self) -> bool:
         """Execute DHCPv6 request using odhcp6c (stateful - requests address)"""
