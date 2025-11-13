@@ -1838,9 +1838,7 @@ class WANMonitor:
         self.last_ipv4: Optional[List[str]] = None
         self.last_ipv6: Optional[List[str]] = None
         self.last_ip_change_time: Optional[float] = None
-        self.ip_change_cooldown = (
-            30  # Wait 30s between IP change triggers (prevents loop)
-        )
+        self.ip_change_cooldown = 120  # Wait 120s between IP change triggers (prevents loop from DAD/temporary changes)
 
     def set_expected_mac(self, mac: str) -> None:
         """
@@ -1936,32 +1934,52 @@ class WANMonitor:
 
     def check_for_ip_changes(self) -> bool:
         """
-        Check if WAN IP addresses have changed (router reboot, DHCP renewal, etc.).
-        Returns True if IP changed (triggers rediscovery), False otherwise.
+        Check if WAN IPv4 address has changed (router reboot, DHCP renewal, etc.).
+        Returns True if IPv4 changed (triggers rediscovery), False otherwise.
+
+        CRITICAL FIX: ONLY monitor IPv4 changes, NOT IPv6!
+
+        Why we DON'T monitor IPv6:
+        - IPv6 addresses change frequently and legitimately:
+          * DAD (Duplicate Address Detection) - temporary address states
+          * Privacy Extensions - addresses rotate for privacy
+          * Temporary addresses - created/destroyed during discovery
+          * Router Advertisement updates - periodic RA changes
+        - Monitoring IPv6 creates infinite loops:
+          * WAN monitor detects IPv6 change
+          * Triggers rediscovery
+          * Rediscovery flushes/re-acquires IPv6
+          * WAN monitor sees this as ANOTHER change
+          * Loop continues forever!
+
+        IPv4 is stable and reliable for detecting real network changes:
+        - IPv4 only changes on real events (router reboot, ISP changes, DHCP renewal)
+        - IPv4 changes are a reliable indicator that IPv6 also needs updating
+        - One stable trigger is better than two flaky triggers!
 
         IMPORTANT: With permanent MAC spoofing:
         - MAC stays permanent (already set on first device)
-        - IP changes ARE legitimate (router reboot, DHCP lease renewal, ISP changes)
-        - When IPs change, we need to rediscover addresses and restart proxies
+        - IPv4 changes ARE legitimate (router reboot, DHCP lease renewal, ISP changes)
+        - When IPv4 changes, we rediscover BOTH IPv4 and IPv6
         - Includes cooldown to prevent loops during DHCP negotiation
         """
         current_ipv4, current_ipv6 = self.get_current_addresses()
 
         # First time - just initialize
-        if self.last_ipv4 is None and self.last_ipv6 is None:
+        if self.last_ipv4 is None:
             self.last_ipv4 = current_ipv4
-            self.last_ipv6 = current_ipv6
+            self.last_ipv6 = current_ipv6  # Track for logging but don't monitor
             self.last_ip_change_time = None
             self.logger.info(
-                f"WAN IP monitoring initialized - IPv4: {current_ipv4}, IPv6: {current_ipv6}"
+                f"WAN IPv4 monitoring initialized - IPv4: {current_ipv4} "
+                f"(IPv6 health checking enabled)"
             )
             return False
 
-        # Check for IP address changes
+        # ONLY check for IPv4 changes (IPv6 monitoring disabled!)
         ipv4_changed = set(current_ipv4) != set(self.last_ipv4 or [])
-        ipv6_changed = set(current_ipv6) != set(self.last_ipv6 or [])
 
-        if ipv4_changed or ipv6_changed:
+        if ipv4_changed:
             # CRITICAL: Check cooldown to prevent infinite loop
             # During DHCP renewal, IPs may appear/disappear temporarily
             current_time = time.time()
@@ -1971,7 +1989,7 @@ class WANMonitor:
                 if time_since_last_change < self.ip_change_cooldown:
                     # Within cooldown period - ignore this change (likely transient)
                     self.logger.debug(
-                        f"WAN IP change detected but ignoring (cooldown: {time_since_last_change:.1f}s < {self.ip_change_cooldown}s)"
+                        f"WAN IPv4 change detected but ignoring (cooldown: {time_since_last_change:.1f}s < {self.ip_change_cooldown}s)"
                     )
                     # Update tracking but don't trigger reconfiguration
                     self.last_ipv4 = current_ipv4
@@ -1979,15 +1997,9 @@ class WANMonitor:
                     return False
 
             # Outside cooldown or first change - this is a real network change
-            self.logger.warning("🌐 WAN IP address change detected!")
-            if ipv4_changed:
-                self.logger.warning(
-                    f"  IPv4 changed: {self.last_ipv4} → {current_ipv4}"
-                )
-            if ipv6_changed:
-                self.logger.warning(
-                    f"  IPv6 changed: {self.last_ipv6} → {current_ipv6}"
-                )
+            self.logger.warning("🌐 WAN IPv4 address change detected!")
+            self.logger.warning(f"  IPv4 changed: {self.last_ipv4} → {current_ipv4}")
+            self.logger.info(f"  IPv6 current: {current_ipv6} (will be rediscovered)")
 
             # Update last known addresses and change time
             self.last_ipv4 = current_ipv4
@@ -1996,10 +2008,105 @@ class WANMonitor:
 
             # IMPORTANT: MAC stays permanent! Only IPs change
             self.logger.info(
-                "Note: Device MAC remains permanent - only rediscovering IP addresses"
+                "Note: Device MAC remains permanent - rediscovering both IPv4 and IPv6"
             )
 
             return True
+
+        # Update IPv6 tracking silently (no change detection)
+        self.last_ipv6 = current_ipv6
+
+        return False
+
+    def check_ipv6_health(self) -> bool:
+        """
+        Passive IPv6 health check - verify IPv6 is still working WITHOUT triggering on normal changes.
+
+        This is DIFFERENT from monitoring IPv6 address changes:
+        - Does NOT trigger on address changes (DAD, privacy extensions, etc.)
+        - ONLY triggers if IPv6 is actually broken (unreachable, misconfigured, router lost it)
+        - Uses connectivity testing, not address comparison
+
+        Returns True if IPv6 is broken and needs rediscovery, False if healthy.
+
+        Health checks:
+        1. IPv6 address still configured on eth0?
+        2. Can ping6 the router (all-routers multicast)?
+        3. Router still has neighbor entry for our MAC?
+
+        If any check fails consistently (3 times), we consider IPv6 broken.
+        """
+        current_ipv4, current_ipv6 = self.get_current_addresses()
+
+        # No IPv6 addresses? Check if we should have one
+        if not current_ipv6:
+            # Check if we have devices that need IPv6
+            from gateway_service import GatewayService  # Avoid circular import
+
+            # If we're in the middle of discovery, don't panic
+            if hasattr(self, "_ipv6_check_skip_count"):
+                self._ipv6_check_skip_count += 1
+                if self._ipv6_check_skip_count < 3:
+                    self.logger.debug(
+                        f"IPv6 not present but skipping check ({self._ipv6_check_skip_count}/3) - may be in discovery"
+                    )
+                    return False
+            else:
+                self._ipv6_check_skip_count = 1
+                return False
+
+            # IPv6 missing for 3+ checks - might be broken
+            self.logger.warning("⚠️ IPv6 address missing from WAN interface!")
+            self._ipv6_check_skip_count = 0
+            return True
+
+        # Reset skip counter - we have IPv6
+        self._ipv6_check_skip_count = 0
+
+        # Test IPv6 connectivity to router
+        try:
+            # Ping all-routers multicast (ff02::2) - router should always respond
+            # This tests if IPv6 routing is working
+            result = subprocess.run(
+                ["ping6", "-c", "1", "-W", "2", "-I", self.interface, "ff02::2"],
+                capture_output=True,
+                timeout=3,
+            )
+
+            if result.returncode == 0:
+                # IPv6 is healthy!
+                self.logger.debug("✓ IPv6 health check passed (router reachable)")
+                return False
+            else:
+                # Router not reachable - but could be transient
+                if not hasattr(self, "_ipv6_fail_count"):
+                    self._ipv6_fail_count = 0
+
+                self._ipv6_fail_count += 1
+
+                if self._ipv6_fail_count >= 3:
+                    # Failed 3 times in a row - IPv6 is broken!
+                    self.logger.error(
+                        f"❌ IPv6 health check FAILED {self._ipv6_fail_count} times - router unreachable!"
+                    )
+                    self._ipv6_fail_count = 0
+                    return True
+                else:
+                    self.logger.warning(
+                        f"⚠️ IPv6 health check failed ({self._ipv6_fail_count}/3) - router ping timeout"
+                    )
+                    return False
+
+        except subprocess.TimeoutExpired:
+            self.logger.debug("IPv6 health check ping timeout (expected)")
+            return False
+        except Exception as e:
+            self.logger.warning(f"IPv6 health check error: {e}")
+            return False
+
+        # Reset fail counter on success
+        if hasattr(self, "_ipv6_fail_count"):
+            self._ipv6_fail_count = 0
 
         return False
 
