@@ -2564,6 +2564,14 @@ class GatewayService:
         """Main loop: discover new MACs and request IPv6"""
         self.logger.info("Discovery loop started (SINGLE DEVICE MODE)")
 
+        # CRITICAL FIX: Active network scan on startup!
+        # Problem: When gateway starts, ARP table may be empty even if devices are connected
+        # - Device was connected before gateway started
+        # - Device hasn't sent packets recently
+        # - ARP entries expire after inactivity
+        # Solution: Actively ping the LAN subnet to populate ARP table
+        self._perform_initial_network_scan()
+
         while self.running:
             try:
                 new_entries = self.arp_monitor.get_new_macs()
