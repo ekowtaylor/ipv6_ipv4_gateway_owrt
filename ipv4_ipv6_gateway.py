@@ -112,6 +112,14 @@ class SimpleGateway:
                         # Device already configured, just update timestamp
                         self.device.last_updated = datetime.now().isoformat()
                         self._save_state()
+                else:
+                    # No device found in ARP
+                    if self.device:
+                        # Device was configured but now disappeared
+                        self.logger.warning(
+                            f"Device {self.device.mac_address} disconnected - cleaning up"
+                        )
+                        self._cleanup_device()
 
                 # Check WAN network changes
                 if self.device and cfg.MONITOR_WAN_CHANGES:
@@ -685,6 +693,90 @@ class SimpleGateway:
                     )
         except Exception as e:
             self.logger.warning(f"Failed to load state: {e}")
+
+    def _cleanup_device(self):
+        """Clean up when device disconnects"""
+        if not self.device:
+            return
+
+        mac = self.device.mac_address
+        self.logger.info(f"Cleaning up device {mac}")
+
+        # Stop IPv6 proxy if running
+        if self.device.wan_ipv6:
+            self._stop_proxy(mac)
+
+        # Remove port forwarding rules
+        if self.device.wan_ipv4 and self.device.lan_ipv4:
+            self._remove_port_forwarding(self.device.lan_ipv4, self.device.wan_ipv4)
+
+        # Restore original WAN MAC
+        if self.original_wan_mac:
+            self.logger.info(f"Restoring original WAN MAC: {self.original_wan_mac}")
+            self._set_interface_mac(self.wan_interface, self.original_wan_mac)
+
+        # Clear device state
+        self.device = None
+
+        # Remove state file
+        try:
+            if os.path.exists(cfg.STATE_FILE):
+                os.remove(cfg.STATE_FILE)
+        except Exception as e:
+            self.logger.warning(f"Failed to remove state file: {e}")
+
+        self.logger.info("Device cleanup complete")
+
+    def _remove_port_forwarding(self, lan_ip: str, wan_ip: str):
+        """Remove IPv4 NAT port forwarding rules"""
+        self.logger.info(f"Removing IPv4 port forwarding for {lan_ip}")
+
+        for gateway_port, device_port in cfg.PORT_FORWARDS.items():
+            try:
+                # Remove DNAT rule
+                subprocess.run(
+                    [
+                        cfg.CMD_IPTABLES,
+                        "-t",
+                        "nat",
+                        "-D",
+                        "PREROUTING",
+                        "-p",
+                        "tcp",
+                        "-d",
+                        wan_ip,
+                        "--dport",
+                        str(gateway_port),
+                        "-j",
+                        "DNAT",
+                        "--to-destination",
+                        f"{lan_ip}:{device_port}",
+                    ],
+                    capture_output=True,
+                )
+
+                # Remove FORWARD rule
+                subprocess.run(
+                    [
+                        cfg.CMD_IPTABLES,
+                        "-D",
+                        "FORWARD",
+                        "-p",
+                        "tcp",
+                        "-d",
+                        lan_ip,
+                        "--dport",
+                        str(device_port),
+                        "-j",
+                        "ACCEPT",
+                    ],
+                    capture_output=True,
+                )
+
+                self.logger.debug(f"Removed port forward for {gateway_port}")
+
+            except Exception as e:
+                self.logger.debug(f"Error removing port forward {gateway_port}: {e}")
 
     def _print_status(self):
         """Print current status"""
