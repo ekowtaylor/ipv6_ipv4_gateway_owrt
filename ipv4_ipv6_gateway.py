@@ -454,21 +454,30 @@ class SimpleGateway:
 
         self.logger.info(f"Requesting IPv6 for {mac} ({mode_str} mode)")
 
-        # Try SLAAC first
-        self.logger.info(
-            f"Trying SLAAC (waiting {slaac_wait}s for Router Advertisement)..."
-        )
-        time.sleep(slaac_wait)  # Wait for RA
+        # Try SLAAC first with multiple checks
+        # Router Advertisements can arrive at different times (200ms to 600s intervals)
+        slaac_checks = 3  # Check 3 times
+        slaac_interval = slaac_wait  # Time between checks
 
-        ipv6 = self._get_interface_ipv6(self.wan_interface)
-        if ipv6:
-            self.logger.info(f"Got IPv6 via SLAAC: {ipv6}")
-            return ipv6
+        self.logger.info(
+            f"Trying SLAAC ({slaac_checks} checks, {slaac_interval}s interval)..."
+        )
+
+        for check in range(1, slaac_checks + 1):
+            self.logger.debug(f"SLAAC check {check}/{slaac_checks}")
+            time.sleep(slaac_interval)
+
+            ipv6 = self._get_interface_ipv6(self.wan_interface)
+            if ipv6:
+                self.logger.info(
+                    f"Got IPv6 via SLAAC: {ipv6} (after {check * slaac_interval}s)"
+                )
+                return ipv6
+
+        self.logger.info("SLAAC failed after all checks")
 
         # Fall back to DHCPv6
-        self.logger.info(
-            f"SLAAC failed, trying DHCPv6 ({retries} retries, {timeout}s timeout)..."
-        )
+        self.logger.info(f"Trying DHCPv6 ({retries} retries, {timeout}s timeout)...")
 
         for attempt in range(1, retries + 1):
             self.logger.info(f"DHCPv6 attempt {attempt}/{retries}")

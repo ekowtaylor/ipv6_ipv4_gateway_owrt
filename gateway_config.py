@@ -32,7 +32,7 @@ DHCPV4_TIMEOUT = 10  # seconds per attempt (reduced from 15)
 DHCPV4_RETRIES = 8  # total attempts (reduced from 10)
 
 DHCPV6_TIMEOUT = 8  # seconds per attempt (reduced from 10)
-DHCPV6_RETRIES = 4  # total attempts (reduced from 5)
+DHCPV6_RETRIES = 2  # total attempts (reduced - SLAAC is primary for IPv6)
 
 # DHCP settings - Fast reconfiguration (WAN change, MAC already registered on firewall)
 # These are MUCH faster since the MAC is already whitelisted
@@ -43,8 +43,10 @@ DHCPV6_TIMEOUT_FAST = 3  # seconds per attempt (very fast!)
 DHCPV6_RETRIES_FAST = 2  # only 2 attempts needed
 
 # SLAAC wait time
-SLAAC_WAIT_TIME = 2  # seconds to wait for Router Advertisement (reduced from 3)
-SLAAC_WAIT_TIME_FAST = 1  # seconds for fast reconfig (RA cache likely exists)
+SLAAC_WAIT_TIME = (
+    5  # seconds to wait for Router Advertisement (increased for reliability)
+)
+SLAAC_WAIT_TIME_FAST = 2  # seconds for fast reconfig (RA cache likely exists)
 
 # Port forwarding (IPv4 NAT)
 # Format: {gateway_port: device_port}
