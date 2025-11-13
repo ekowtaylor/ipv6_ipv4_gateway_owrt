@@ -625,12 +625,32 @@ class DHCPv6Manager:
                             )
 
             if ipv6_addresses:
-                # Return the first global IPv6 address
-                selected = ipv6_addresses[0]
-                self.logger.info(
-                    f"✓ Discovered IPv6 from neighbor table: {selected} (MAC: {mac})"
-                )
-                return selected
+                # CRITICAL: Return ALL IPv6 addresses, not just one!
+                # Why bind to all addresses instead of picking "best"?
+                # 1. Maximum compatibility - works regardless of which address router/client uses
+                # 2. Handles privacy extensions - multiple addresses all work
+                # 3. Resilient - if one becomes unreachable, others still work
+                # 4. No guessing - don't need to pick which is "preferred"
+                #
+                # We'll start socat proxies for ALL of them:
+                # - socat bind=[dd56:fb82:64ad::85c]:8080 → device:80
+                # - socat bind=[dd56:fb82:64ad::46b7:d0ff:fea6:773f]:8080 → device:80
+                # This way ANY IPv6 the router knows will work!
+
+                if len(ipv6_addresses) > 1:
+                    self.logger.info(
+                        f"Found {len(ipv6_addresses)} IPv6 addresses for MAC {mac}: {ipv6_addresses}"
+                    )
+                    self.logger.info(
+                        f"Will bind socat to ALL addresses for maximum compatibility"
+                    )
+                else:
+                    self.logger.info(
+                        f"✓ Discovered IPv6 from neighbor table: {ipv6_addresses[0]} (MAC: {mac})"
+                    )
+
+                # Return ALL addresses (will be stored as comma-separated string)
+                return ",".join(ipv6_addresses)
             else:
                 self.logger.debug(
                     f"No global IPv6 addresses found for MAC {mac} in neighbor table"
@@ -3306,9 +3326,18 @@ class GatewayService:
                 )
 
     def _monitoring_loop(self) -> None:
-        """Monitor active devices and update status / timeouts"""
-        self.logger.info("Monitoring loop started")
+        """
+        Monitor active devices and update status / timeouts.
+
+        CRITICAL: Also syncs IPv6 addresses with router's neighbor table!
+        This prevents gateway/router IPv6 mismatches when router renews/changes addresses.
+        """
+        self.logger.info("Monitoring loop started (with IPv6 neighbor table sync)")
         timeout_delta = timedelta(seconds=cfg.DEVICE_STATUS_TIMEOUT)
+
+        # Track last IPv6 sync time (sync every 60 seconds)
+        last_ipv6_sync = 0
+        ipv6_sync_interval = 60  # seconds
 
         while self.running:
             try:
@@ -3333,6 +3362,13 @@ class GatewayService:
                                     device.status = "inactive"
 
                     self.device_store.save_devices(self.devices)
+
+                # CRITICAL: Periodic IPv6 sync with router's neighbor table
+                # Prevents gateway/router IPv6 mismatches (router renews/changes IPv6)
+                current_time = time.time()
+                if current_time - last_ipv6_sync >= ipv6_sync_interval:
+                    self._sync_ipv6_with_router()
+                    last_ipv6_sync = current_time
 
                 time.sleep(cfg.DEVICE_MONITOR_INTERVAL)
 
@@ -3386,6 +3422,97 @@ class GatewayService:
             except Exception as e:
                 self.logger.error(f"Error in WAN monitoring loop: {e}")
                 time.sleep(10)
+
+    def _sync_ipv6_with_router(self) -> None:
+        """
+        Periodically sync device IPv6 addresses with router's neighbor table.
+
+        CRITICAL: Prevents gateway/router IPv6 mismatches!
+
+        Problem: Router can change device's IPv6 at any time:
+        - DHCPv6 lease renewal
+        - Router reboots
+        - Privacy extensions
+        - Network changes
+
+        If gateway cached old IPv6 but router knows new IPv6:
+        - Socat binds to old IPv6 ❌
+        - Router routes to new IPv6 ❌
+        - Connections FAIL! ❌
+
+        Solution: Periodically query router's neighbor table and update if changed
+        This keeps gateway and router ALWAYS in sync!
+        """
+        self.logger.debug("Syncing IPv6 addresses with router's neighbor table...")
+
+        with self._devices_lock:
+            for mac, device in list(self.devices.items()):
+                # Skip if device has no IPv6 (nothing to sync)
+                if not device.ipv6_address:
+                    continue
+
+                # Query router's neighbor table for this MAC
+                router_ipv6s = self.dhcpv6_manager.discover_ipv6_from_neighbor_table(
+                    mac
+                )
+
+                if not router_ipv6s:
+                    # Router doesn't have IPv6 for this MAC anymore
+                    self.logger.warning(
+                        f"⚠️ Router has NO IPv6 for {mac} (gateway cached: {device.ipv6_address})"
+                    )
+                    # Keep cached IPv6 for now - router might still be updating
+                    continue
+
+                # Normalize both for comparison (handle comma-separated lists)
+                cached_ipv6_set = set(device.ipv6_address.split(","))
+                router_ipv6_set = set(router_ipv6s.split(","))
+
+                # Compare with cached IPv6
+                if cached_ipv6_set != router_ipv6_set:
+                    # IPv6 MISMATCH! Router has different IPv6 than we cached
+                    self.logger.warning(f"🔄 IPv6 MISMATCH for {mac}!")
+                    self.logger.warning(f"   Gateway cached: {device.ipv6_address}")
+                    self.logger.warning(f"   Router knows:   {router_ipv6s}")
+                    self.logger.warning(f"   Updating gateway to match router...")
+
+                    # Update device's IPv6 to match router
+                    old_ipv6 = device.ipv6_address
+                    device.ipv6_address = router_ipv6s
+
+                    # Save updated device info
+                    self.device_store.add_device(device)
+
+                    # CRITICAL: Restart socat proxies with new IPv6 addresses!
+                    if self.proxy_manager and device.ipv4_address:
+                        self.logger.info(
+                            f"Restarting proxies with new IPv6 addresses..."
+                        )
+
+                        # Stop old proxies (bound to old IPv6)
+                        self.proxy_manager.stop_proxies_for_device(mac)
+
+                        # Wait for cleanup
+                        time.sleep(1)
+
+                        # Start new proxies (bound to new IPv6)
+                        self.proxy_manager.start_proxy_for_device(
+                            mac=mac,
+                            device_ipv4=device.ipv4_address,
+                            device_ipv6=router_ipv6s,
+                            port_map=cfg.IPV6_PROXY_PORT_FORWARDS,
+                        )
+
+                        self.logger.info(
+                            f"✓ Proxies restarted with new IPv6: {router_ipv6s}"
+                        )
+
+                    self.logger.info(f"✓ Synced {mac}: {old_ipv6} → {router_ipv6s}")
+                else:
+                    # IPv6 matches - all good!
+                    self.logger.debug(
+                        f"✓ IPv6 in sync for {mac}: {device.ipv6_address}"
+                    )
 
     def _rediscover_all_devices(self) -> None:
         """
