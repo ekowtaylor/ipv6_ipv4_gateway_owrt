@@ -35,7 +35,6 @@ logging.basicConfig(
     format=cfg.LOG_FORMAT,
     handlers=[
         logging.FileHandler(cfg.LOG_FILE),
-        logging.StreamHandler(sys.stdout),
     ],
 )
 
@@ -2703,9 +2702,15 @@ class GatewayService:
             ipv4_thread.start()
             ipv6_thread.start()
 
-            # Wait for both to complete (with timeouts)
-            ipv4_thread.join(timeout=30)  # IPv4 should be fast (2-5s)
-            ipv6_thread.join(timeout=90)  # IPv6 can be slow (15-75s)
+            # CRITICAL FIX: Wait for threads to ACTUALLY complete, no timeouts!
+            # Problem: Timeouts cause threads to be abandoned while still running
+            # The background thread logs success, but the main thread saves device with null
+            # Solution: Wait indefinitely for threads to complete (they have internal timeouts)
+            self.logger.info(f"Waiting for IPv4 discovery to complete...")
+            ipv4_thread.join()  # Wait until IPv4 thread finishes (no timeout!)
+
+            self.logger.info(f"Waiting for IPv6 discovery to complete...")
+            ipv6_thread.join()  # Wait until IPv6 thread finishes (no timeout!)
 
             total_discovery_time = timing_module.time() - discovery_start_time
             self.logger.info(
