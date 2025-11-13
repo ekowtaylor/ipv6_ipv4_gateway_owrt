@@ -141,8 +141,100 @@ if command -v opkg >/dev/null 2>&1; then
 
     # IPv6 NAT support (CRITICAL for IPv6→IPv4 proxying with SNAT)
     echo -e "${BLUE}Installing IPv6 NAT kernel modules...${NC}"
-    opkg install kmod-ipt-nat6 2>/dev/null || echo -e "${YELLOW}⚠ kmod-ipt-nat6 installation failed or already installed${NC}"
-    opkg install kmod-nf-nat6 2>/dev/null || echo -e "${YELLOW}⚠ kmod-nf-nat6 installation failed or already installed${NC}"
+    echo -e "${YELLOW}This is required for IPv6→IPv4 proxy with SNAT (proper return traffic)${NC}"
+
+    # Try multiple package names (different OpenWrt versions use different names)
+    IPV6_NAT_INSTALLED=false
+
+    # Try kmod-ipt-nat6 (most common)
+    if opkg install kmod-ipt-nat6 2>/dev/null; then
+        echo -e "${GREEN}✓ kmod-ipt-nat6 installed${NC}"
+        IPV6_NAT_INSTALLED=true
+    elif opkg list-installed | grep -q kmod-ipt-nat6; then
+        echo -e "${GREEN}✓ kmod-ipt-nat6 already installed${NC}"
+        IPV6_NAT_INSTALLED=true
+    else
+        echo -e "${YELLOW}⚠ kmod-ipt-nat6 not available, trying alternatives...${NC}"
+    fi
+
+    # Try kmod-nf-nat6
+    if opkg install kmod-nf-nat6 2>/dev/null; then
+        echo -e "${GREEN}✓ kmod-nf-nat6 installed${NC}"
+        IPV6_NAT_INSTALLED=true
+    elif opkg list-installed | grep -q kmod-nf-nat6; then
+        echo -e "${GREEN}✓ kmod-nf-nat6 already installed${NC}"
+        IPV6_NAT_INSTALLED=true
+    else
+        echo -e "${YELLOW}⚠ kmod-nf-nat6 not available${NC}"
+    fi
+
+    # Try ip6tables-mod-nat (some builds)
+    if ! $IPV6_NAT_INSTALLED; then
+        if opkg install ip6tables-mod-nat 2>/dev/null; then
+            echo -e "${GREEN}✓ ip6tables-mod-nat installed${NC}"
+            IPV6_NAT_INSTALLED=true
+        elif opkg list-installed | grep -q ip6tables-mod-nat; then
+            echo -e "${GREEN}✓ ip6tables-mod-nat already installed${NC}"
+            IPV6_NAT_INSTALLED=true
+        fi
+    fi
+
+    # Verify ip6tables NAT table is actually available
+    echo -e "${BLUE}Verifying ip6tables NAT support...${NC}"
+    if command -v ip6tables >/dev/null 2>&1; then
+        if ip6tables -t nat -L >/dev/null 2>&1; then
+            echo -e "${GREEN}✓✓✓ IPv6 NAT is fully functional!${NC}"
+            IPV6_NAT_INSTALLED=true
+        else
+            echo -e "${RED}✗ ip6tables NAT table not available${NC}"
+            IPV6_NAT_INSTALLED=false
+        fi
+    else
+        echo -e "${RED}✗ ip6tables command not found${NC}"
+        IPV6_NAT_INSTALLED=false
+    fi
+
+    # Show status and recommendations
+    if $IPV6_NAT_INSTALLED; then
+        echo -e "${GREEN}========================================${NC}"
+        echo -e "${GREEN}IPv6 NAT Support: ENABLED${NC}"
+        echo -e "${GREEN}========================================${NC}"
+        echo -e "${GREEN}IPv6→IPv4 proxy will use SNAT for proper return traffic${NC}"
+        echo ""
+    else
+        echo -e "${YELLOW}========================================${NC}"
+        echo -e "${YELLOW}IPv6 NAT Support: NOT AVAILABLE${NC}"
+        echo -e "${YELLOW}========================================${NC}"
+        echo -e "${RED}WARNING: IPv6→IPv4 proxy may not work correctly!${NC}"
+        echo ""
+        echo -e "${YELLOW}This can happen because:${NC}"
+        echo "  1. Your OpenWrt build doesn't include IPv6 NAT support"
+        echo "  2. Kernel version doesn't support IPv6 NAT"
+        echo "  3. Package repository doesn't have the modules"
+        echo ""
+        echo -e "${YELLOW}Troubleshooting steps:${NC}"
+        echo "  1. Check available modules:"
+        echo "     opkg list | grep -E 'kmod.*nat|ip6tables.*nat'"
+        echo ""
+        echo "  2. Check kernel version:"
+        echo "     uname -r"
+        echo "     # IPv6 NAT requires kernel 3.7+"
+        echo ""
+        echo "  3. Manual installation attempts:"
+        echo "     opkg update"
+        echo "     opkg install kmod-ipt-nat6"
+        echo "     opkg install kmod-nf-nat6"
+        echo "     opkg install ip6tables-mod-nat"
+        echo ""
+        echo "  4. Verify after installation:"
+        echo "     ip6tables -t nat -L"
+        echo "     # Should show NAT chains, not error"
+        echo ""
+        echo -e "${YELLOW}Gateway will continue installation but IPv6 proxy may fail.${NC}"
+        echo -e "${YELLOW}Press Ctrl+C to abort or wait 10 seconds to continue...${NC}"
+        sleep 10
+    fi
+    echo ""
 
     # IPv6→IPv4 proxy options (required for IPv6 clients to access IPv4-only devices)
     echo -e "${BLUE}Installing IPv6→IPv4 proxy (socat is default, HAProxy is optional)...${NC}"
