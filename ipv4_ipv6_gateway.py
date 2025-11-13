@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -107,7 +108,13 @@ class SimpleGateway:
                     # If no device configured, or MAC changed, configure this device
                     if not self.device or self.device.mac_address != mac:
                         self.logger.info(f"New device detected: {mac} at {lan_ip}")
-                        self._configure_device(mac, lan_ip)
+                        # Use threading to avoid blocking the main loop
+                        config_thread = threading.Thread(
+                            target=self._configure_device,
+                            args=(mac, lan_ip),
+                            daemon=True,
+                        )
+                        config_thread.start()
                     else:
                         # Device already configured, just update timestamp
                         self.device.last_updated = datetime.now().isoformat()
@@ -115,21 +122,44 @@ class SimpleGateway:
                 else:
                     # No device found in ARP
                     if self.device:
-                        # Device was configured but now disappeared
-                        self.logger.warning(
-                            f"Device {self.device.mac_address} disconnected - cleaning up"
-                        )
-                        self._cleanup_device()
+                        # Check how long device has been gone
+                        # Only cleanup if gone for 2+ check cycles (avoid flapping)
+                        if not hasattr(self, "_device_missing_count"):
+                            self._device_missing_count = 0
 
-                # Check WAN network changes
-                if self.device and cfg.MONITOR_WAN_CHANGES:
+                        self._device_missing_count += 1
+
+                        if self._device_missing_count >= 2:
+                            self.logger.warning(
+                                f"Device {self.device.mac_address} disconnected - cleaning up"
+                            )
+                            self._cleanup_device()
+                            self._device_missing_count = 0
+                        else:
+                            self.logger.debug(
+                                f"Device not found in ARP (count: {self._device_missing_count})"
+                            )
+                    else:
+                        # Reset counter if no device configured
+                        self._device_missing_count = 0
+
+                # Check WAN network changes (only for successfully configured devices)
+                if (
+                    self.device
+                    and self.device.status == "configured"
+                    and cfg.MONITOR_WAN_CHANGES
+                ):
                     if self._wan_network_changed():
                         self.logger.warning(
                             "WAN network changed - reconfiguring device"
                         )
-                        self._configure_device(
-                            self.device.mac_address, self.device.lan_ipv4
+                        # Use threading to avoid blocking the main loop
+                        reconfig_thread = threading.Thread(
+                            target=self._configure_device,
+                            args=(self.device.mac_address, self.device.lan_ipv4),
+                            daemon=True,
                         )
+                        reconfig_thread.start()
 
                 # Sleep before next check
                 time.sleep(cfg.CHECK_INTERVAL)
@@ -161,6 +191,9 @@ class SimpleGateway:
         """
         Discover the ONE device on LAN interface.
         Returns (mac, ip) tuple or None.
+
+        If the currently configured device is in ARP, return it.
+        Otherwise return the first non-gateway device found.
         """
         try:
             # Get ARP entries for LAN interface
@@ -175,30 +208,50 @@ class SimpleGateway:
             self.logger.debug(f"Checking ARP table for {self.lan_interface}")
             self.logger.debug(f"ARP output: {result.stdout}")
 
-            # Parse ARP output
+            # Parse ARP output and collect all devices
             # Format: 192.168.1.100 lladdr aa:bb:cc:dd:ee:ff REACHABLE
             # OR:     192.168.1.100 lladdr aa:bb:cc:dd:ee:ff STALE
             # OR:     192.168.1.100 lladdr aa:bb:cc:dd:ee:ff DELAY
+            devices = []
+
             for line in result.stdout.splitlines():
                 parts = line.split()
                 self.logger.debug(f"ARP line: {line} -> Parts: {parts}")
 
-                # Changed from >= 5 to >= 4 to handle entries without state
-                if len(parts) >= 4 and parts[2] == "lladdr":
+                # ARP format: <IP> lladdr <MAC> [STATE]
+                # parts[0]=IP, parts[1]="lladdr", parts[2]=MAC, parts[3]=STATE (optional)
+                if len(parts) >= 3 and parts[1] == "lladdr":
                     ip = parts[0]
-                    mac = parts[3].lower()
+                    mac = parts[2].lower()
 
                     # Skip gateway itself (192.168.1.1)
                     if ip == cfg.LAN_GATEWAY_IP:
                         self.logger.debug(f"Skipping gateway IP: {ip}")
                         continue
 
-                    # Found a device! (Don't care about state - REACHABLE/STALE/DELAY all OK)
-                    self.logger.info(f"Found device in ARP: {mac} at {ip}")
-                    return (mac, ip)
+                    # Add to devices list
+                    devices.append((mac, ip))
+                    self.logger.debug(f"Found device in ARP: {mac} at {ip}")
 
-            self.logger.debug("No devices found in ARP table")
-            return None
+            # No devices found
+            if not devices:
+                self.logger.debug("No devices found in ARP table")
+                return None
+
+            # If we have a currently configured device, check if it's still in ARP
+            if self.device:
+                for mac, ip in devices:
+                    if mac == self.device.mac_address:
+                        self.logger.debug(
+                            f"Configured device still present: {mac} at {ip}"
+                        )
+                        return (mac, ip)
+
+            # Either no configured device, or it's gone
+            # Return the first device found
+            mac, ip = devices[0]
+            self.logger.info(f"Found device in ARP: {mac} at {ip}")
+            return (mac, ip)
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to get ARP entries: {e}")
@@ -609,7 +662,15 @@ class SimpleGateway:
             self.logger.warning(f"Error stopping proxies: {e}")
 
     def _wan_network_changed(self) -> bool:
-        """Check if WAN network has changed"""
+        """
+        Check if WAN network has changed.
+
+        Returns True if:
+        - IPv4 address changed
+        - IPv6 address changed
+        - IPv4/IPv6 appeared when it was missing before
+        - IPv4/IPv6 disappeared
+        """
         if not self.device:
             return False
 
@@ -617,19 +678,38 @@ class SimpleGateway:
         current_ipv4 = self._get_interface_ipv4(self.wan_interface)
         current_ipv6 = self._get_interface_ipv6(self.wan_interface)
 
-        # Compare with stored
         changed = False
 
-        if self.device.wan_ipv4 and current_ipv4 != self.device.wan_ipv4:
-            self.logger.warning(
-                f"WAN IPv4 changed: {self.device.wan_ipv4} → {current_ipv4}"
-            )
+        # IPv4 change detection
+        if self.device.wan_ipv4:
+            # We had IPv4 before
+            if current_ipv4 != self.device.wan_ipv4:
+                if current_ipv4:
+                    self.logger.warning(
+                        f"WAN IPv4 changed: {self.device.wan_ipv4} → {current_ipv4}"
+                    )
+                else:
+                    self.logger.warning(f"WAN IPv4 lost: {self.device.wan_ipv4} → None")
+                changed = True
+        elif current_ipv4:
+            # We didn't have IPv4 before, but now we do!
+            self.logger.info(f"WAN IPv4 appeared: None → {current_ipv4}")
             changed = True
 
-        if self.device.wan_ipv6 and current_ipv6 != self.device.wan_ipv6:
-            self.logger.warning(
-                f"WAN IPv6 changed: {self.device.wan_ipv6} → {current_ipv6}"
-            )
+        # IPv6 change detection
+        if self.device.wan_ipv6:
+            # We had IPv6 before
+            if current_ipv6 != self.device.wan_ipv6:
+                if current_ipv6:
+                    self.logger.warning(
+                        f"WAN IPv6 changed: {self.device.wan_ipv6} → {current_ipv6}"
+                    )
+                else:
+                    self.logger.warning(f"WAN IPv6 lost: {self.device.wan_ipv6} → None")
+                changed = True
+        elif current_ipv6:
+            # We didn't have IPv6 before, but now we do!
+            self.logger.info(f"WAN IPv6 appeared: None → {current_ipv6}")
             changed = True
 
         return changed

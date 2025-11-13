@@ -13,22 +13,30 @@ echo "=================================="
 echo ""
 
 # Auto-detect device info from device.json (single-device mode)
-if [ -f /etc/ipv4-ipv6_gateway/device.json ]; then
-    DEVICE_IPV6=$(cat /etc/ipv4-ipv6-gateway/device.json | grep -o '"wan_ipv6": "[^"]*' | head -1 | cut -d'"' -f4)
-    DEVICE_IPV4=$(cat /etc/ipv4-ipv6-gateway/device.json | grep -o '"lan_ipv4": "[^"]*' | head -1 | cut -d'"' -f4)
+STATE_FILE="/etc/ipv4-ipv6-gateway/device.json"
+
+if [ -f "$STATE_FILE" ]; then
+    DEVICE_IPV6=$(grep -o '"wan_ipv6": "[^"]*' "$STATE_FILE" | head -1 | cut -d'"' -f4)
+    DEVICE_IPV4=$(grep -o '"lan_ipv4": "[^"]*' "$STATE_FILE" | head -1 | cut -d'"' -f4)
 fi
 
-# Fallback to defaults if not found
-DEVICE_IPV6="${DEVICE_IPV6:-2620:10d:c050:100:46b7:d0ff:fea6:6dfc}"
-DEVICE_IPV4="${DEVICE_IPV4:-192.168.1.128}"
+# Validate that we got valid values, exit if not
+if [ -z "$DEVICE_IPV6" ] || [ -z "$DEVICE_IPV4" ]; then
+    echo "ERROR: Cannot determine device IPs from $STATE_FILE"
+    echo ""
+    echo "Please ensure the gateway service has configured a device first:"
+    echo "  /etc/init.d/ipv4-ipv6-gateway status"
+    echo "  cat $STATE_FILE"
+    exit 1
+fi
 
 echo "Device WAN IPv6: $DEVICE_IPV6"
 echo "Device LAN IPv4: $DEVICE_IPV4"
 echo ""
 
-# Step 1: Kill old socat processes
-echo "[1/6] Killing old socat processes..."
-killall socat 2>/dev/null || true
+# Step 1: Kill old socat processes (IPv6 proxies only, not all socat!)
+echo "[1/6] Killing old IPv6 proxy socat processes..."
+pkill -f "socat.*TCP6-LISTEN" 2>/dev/null || true
 sleep 2
 
 # Step 2: Ensure IPv6 is on eth0

@@ -88,7 +88,7 @@ echo ""
 # 3. CHECK IF SOCAT PROCESSES ARE RUNNING
 # ============================================
 echo -e "${YELLOW}[3] Checking if socat proxy processes are running...${NC}"
-SOCAT_PROCS=$(ps w | grep socat | grep -v grep)
+SOCAT_PROCS=$(ps | grep socat | grep -v grep)
 if [ -n "$SOCAT_PROCS" ]; then
     echo -e "${GREEN}✓ Found socat processes:${NC}"
     echo "$SOCAT_PROCS" | while read line; do
@@ -318,22 +318,32 @@ else
         echo ""
     fi
 
-    echo -e "${CYAN}Copy-paste ready fix:${NC}"
+    echo -e "${CYAN}Copy-paste ready fix (REVIEW BEFORE RUNNING):${NC}"
     echo -e "${YELLOW}────────────────────────────────────────${NC}"
+    echo -e "${RED}⚠ WARNING: Review these commands before executing!${NC}"
+    echo ""
     cat << EOF
 # Complete fix script (NO source binding - kernel chooses best route!)
 ip -6 addr add $DEVICE_IPV6/64 dev eth0 2>/dev/null || true
 ip -6 neigh add proxy $DEVICE_IPV6 dev eth0 2>/dev/null || true
 ip6tables -P INPUT ACCEPT
 ip6tables -P FORWARD ACCEPT
-killall socat 2>/dev/null || true
+
+# Kill only IPv6 proxy socat processes (not all socat!)
+read -p "Kill IPv6 proxy socat processes? (y/n) " -r
+if [[ \$REPLY =~ ^[Yy]\$ ]]; then
+    pkill -f "socat.*TCP6-LISTEN" 2>/dev/null || true
+fi
+
 sleep 2
 socat -d -d TCP6-LISTEN:80,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:80 &
 socat -d -d TCP6-LISTEN:23,bind=$DEVICE_IPV6,fork,reuseaddr TCP4:$DEVICE_IPV4:23 &
 sleep 2
 ps | grep socat | grep -v grep
 EOF
+    echo ""
     echo -e "${YELLOW}────────────────────────────────────────${NC}"
+    echo -e "${CYAN}📋 Copy and paste the above commands after reviewing them${NC}"
 fi
 
 echo ""
