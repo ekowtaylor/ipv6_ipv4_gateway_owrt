@@ -182,30 +182,72 @@ if [ -f "/etc/haproxy/haproxy.cfg" ]; then
     echo -e "${GREEN}✓ Removed HAProxy configuration${NC}"
 fi
 
-# CRITICAL: Clean up iptables/ip6tables rules
-echo -e "${BLUE}- Cleaning up firewall rules (iptables/ip6tables)...${NC}"
+# CRITICAL: Clean up iptables/ip6tables rules (SURGICAL - only gateway rules)
+echo -e "${BLUE}- Cleaning up gateway firewall rules (iptables/ip6tables)...${NC}"
 
-# Flush NAT rules (PREROUTING, OUTPUT chains)
 if command -v iptables >/dev/null 2>&1; then
-    echo -e "${BLUE}  Flushing iptables NAT rules...${NC}"
-    iptables -t nat -F PREROUTING 2>/dev/null || true
-    iptables -t nat -F OUTPUT 2>/dev/null || true
-    iptables -t nat -F POSTROUTING 2>/dev/null || true
+    echo -e "${BLUE}  Removing gateway-specific iptables rules...${NC}"
 
-    # Flush FORWARD chain (port forwarding rules)
-    iptables -F FORWARD 2>/dev/null || true
+    # Try to read device info from state file to know what rules to remove
+    if [ -f "$CONFIG_DIR/device.json" ]; then
+        echo -e "${BLUE}    Reading device state for cleanup...${NC}"
+        # Extract IPs if possible (use python/jq if available, otherwise best effort)
+        if command -v python3 >/dev/null 2>&1; then
+            WAN_IPV4=$(python3 -c "import json; f=open('$CONFIG_DIR/device.json'); d=json.load(f); print(d.get('wan_ipv4',''))" 2>/dev/null || echo "")
+            LAN_IPV4=$(python3 -c "import json; f=open('$CONFIG_DIR/device.json'); d=json.load(f); print(d.get('lan_ipv4',''))" 2>/dev/null || echo "")
+        fi
+    fi
 
-    echo -e "${GREEN}  ✓ Flushed iptables rules${NC}"
+    # Remove port forwarding rules (check common ports used by gateway)
+    # Ports from gateway_config.py: 8080:80, 2323:23, 8443:443, 2222:22, 5900:5900, 3389:3389
+    for GW_PORT in 8080 2323 8443 2222 5900 3389; do
+        # Try to delete DNAT rules for these ports (will fail silently if not present)
+        iptables -t nat -D PREROUTING -p tcp --dport $GW_PORT -j DNAT 2>/dev/null || true
+    done
+
+    # If we know the LAN IP, remove FORWARD rules for it
+    if [ -n "$LAN_IPV4" ]; then
+        for DEV_PORT in 80 23 443 22 5900 3389; do
+            iptables -D FORWARD -p tcp -d $LAN_IPV4 --dport $DEV_PORT -j ACCEPT 2>/dev/null || true
+        done
+        echo -e "${GREEN}    ✓ Removed FORWARD rules for $LAN_IPV4${NC}"
+    fi
+
+    echo -e "${GREEN}  ✓ Removed gateway-specific iptables rules${NC}"
 fi
 
 if command -v ip6tables >/dev/null 2>&1; then
-    echo -e "${BLUE}  Flushing ip6tables rules...${NC}"
-    ip6tables -F INPUT 2>/dev/null || true
-    ip6tables -F FORWARD 2>/dev/null || true
-    ip6tables -F OUTPUT 2>/dev/null || true
+    echo -e "${BLUE}  Removing gateway-specific ip6tables SNAT rules...${NC}"
 
-    echo -e "${GREEN}  ✓ Flushed ip6tables rules${NC}"
+    # Remove IPv6 SNAT rules (these are specific to the gateway)
+    # Try to read LAN IP from state
+    if [ -f "$CONFIG_DIR/device.json" ] && [ -z "$LAN_IPV4" ]; then
+        if command -v python3 >/dev/null 2>&1; then
+            LAN_IPV4=$(python3 -c "import json; f=open('$CONFIG_DIR/device.json'); d=json.load(f); print(d.get('lan_ipv4',''))" 2>/dev/null || echo "")
+        fi
+    fi
+
+    # Remove SNAT rules for common device ports (80, 23)
+    if [ -n "$LAN_IPV4" ]; then
+        for PORT in 80 23; do
+            ip6tables -t nat -D POSTROUTING -d $LAN_IPV4 -p tcp --dport $PORT -j SNAT --to-source 192.168.1.1 2>/dev/null || true
+        done
+        echo -e "${GREEN}    ✓ Removed IPv6 SNAT rules for $LAN_IPV4${NC}"
+    else
+        # Best effort - try common LAN IPs
+        for LAN in 192.168.1.100 192.168.1.101 192.168.1.102; do
+            for PORT in 80 23; do
+                ip6tables -t nat -D POSTROUTING -d $LAN -p tcp --dport $PORT -j SNAT --to-source 192.168.1.1 2>/dev/null || true
+            done
+        done
+        echo -e "${GREEN}    ✓ Attempted removal of IPv6 SNAT rules (best effort)${NC}"
+    fi
+
+    echo -e "${GREEN}  ✓ Removed gateway-specific ip6tables rules${NC}"
 fi
+
+# NOTE: We do NOT flush entire chains - that would break other firewall rules!
+echo -e "${BLUE}  Existing firewall rules preserved (only gateway rules removed)${NC}"
 
 # CRITICAL: Flush connection tracking table
 echo -e "${BLUE}- Flushing connection tracking table...${NC}"
