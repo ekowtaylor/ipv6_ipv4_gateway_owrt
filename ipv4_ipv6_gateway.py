@@ -160,7 +160,15 @@ class NetworkInterface:
         """Add an IPv6 address to interface"""
         try:
             subprocess.run(
-                [cfg.CMD_IP, "-6", "addr", "add", f"{ipv6}/{prefix_len}", "dev", self.interface_name],
+                [
+                    cfg.CMD_IP,
+                    "-6",
+                    "addr",
+                    "add",
+                    f"{ipv6}/{prefix_len}",
+                    "dev",
+                    self.interface_name,
+                ],
                 check=True,
                 capture_output=True,
             )
@@ -169,7 +177,9 @@ class NetworkInterface:
         except subprocess.CalledProcessError as e:
             # Check if address already exists (not an error)
             if "RTNETLINK answers: File exists" in str(e.stderr):
-                self.logger.debug(f"IPv6 {ipv6} already exists on {self.interface_name}")
+                self.logger.debug(
+                    f"IPv6 {ipv6} already exists on {self.interface_name}"
+                )
                 return True
             self.logger.error(f"Failed to add IPv6 address: {e}")
             return False
@@ -383,6 +393,19 @@ class DHCPv6Manager:
                 self.logger.error(f"Failed to spoof MAC {mac}")
                 return None
 
+            # CRITICAL: Flush IPv6 neighbor cache after MAC change
+            # When MAC changes, old IPv6 neighbor entries can cause conflicts
+            # The router needs to learn the new MAC for IPv6 neighbor discovery
+            try:
+                subprocess.run(
+                    [cfg.CMD_IP, "-6", "neigh", "flush", "dev", self.interface],
+                    check=True,
+                    capture_output=True,
+                )
+                self.logger.debug(f"Flushed IPv6 neighbor cache on {self.interface}")
+            except subprocess.CalledProcessError as e:
+                self.logger.warning(f"Failed to flush IPv6 neighbor cache: {e}")
+
             time.sleep(1)
 
             # Retry with exponential backoff
@@ -398,8 +421,13 @@ class DHCPv6Manager:
                     continue
 
                 # Wait for SLAAC (Router Advertisement)
+                # CRITICAL: IPv6 takes MUCH longer than IPv4 after MAC change!
+                # - Router must detect new MAC via Neighbor Discovery
+                # - Router Advertisement must be sent to new MAC
+                # - SLAAC address generation and DAD (Duplicate Address Detection)
+                # Increased from 3s to 15s to allow proper IPv6 acquisition
                 self.logger.debug(f"Waiting for SLAAC (Router Advertisement)...")
-                time.sleep(3)  # Give SLAAC time to work
+                time.sleep(15)  # Give SLAAC time to work after MAC spoof
 
                 # Check if SLAAC assigned an address
                 addresses = self.iface.get_ipv6_addresses()
@@ -413,7 +441,9 @@ class DHCPv6Manager:
 
                     # Try DHCPv6 for additional configuration (DNS, etc.)
                     # This won't necessarily give us a new address, but provides other info
-                    self.logger.debug("Attempting DHCPv6 for additional configuration...")
+                    self.logger.debug(
+                        "Attempting DHCPv6 for additional configuration..."
+                    )
                     self._request_dhcpv6_info_only()
 
                     return ipv6
@@ -474,36 +504,52 @@ class DHCPv6Manager:
             if obtained_ipv6:
                 time.sleep(1)  # Let network settle
 
-                self.logger.info(f"Ensuring IPv6 {obtained_ipv6} is configured on {self.interface}...")
+                self.logger.info(
+                    f"Ensuring IPv6 {obtained_ipv6} is configured on {self.interface}..."
+                )
                 if self.iface.add_ipv6_address(obtained_ipv6, 64):
-                    self.logger.info(f"✓ IPv6 {obtained_ipv6} configured on {self.interface}")
+                    self.logger.info(
+                        f"✓ IPv6 {obtained_ipv6} configured on {self.interface}"
+                    )
 
                     # Enable Proxy NDP for this IPv6
                     if self._enable_proxy_ndp(obtained_ipv6):
                         self.logger.info(f"✓ Enabled Proxy NDP for {obtained_ipv6}")
                     else:
-                        self.logger.warning(f"⚠ Failed to enable Proxy NDP for {obtained_ipv6}")
+                        self.logger.warning(
+                            f"⚠ Failed to enable Proxy NDP for {obtained_ipv6}"
+                        )
 
                     # CRITICAL: Wait for kernel to fully initialize the IPv6 address
                     # Give the kernel time to complete DAD (Duplicate Address Detection)
                     # and make the address available for binding
-                    self.logger.info(f"Waiting for IPv6 address to be fully ready for binding...")
+                    self.logger.info(
+                        f"Waiting for IPv6 address to be fully ready for binding..."
+                    )
                     time.sleep(3)  # Wait for DAD to complete
 
                     # Verify the address is actually present and usable
                     max_verify_attempts = 5
                     for attempt in range(max_verify_attempts):
                         if self._verify_ipv6_present(obtained_ipv6):
-                            self.logger.info(f"✓ Confirmed: IPv6 {obtained_ipv6} is present and ready on {self.interface}")
+                            self.logger.info(
+                                f"✓ Confirmed: IPv6 {obtained_ipv6} is present and ready on {self.interface}"
+                            )
                             break
                         else:
                             if attempt < max_verify_attempts - 1:
-                                self.logger.warning(f"IPv6 {obtained_ipv6} not yet ready, waiting... (attempt {attempt + 1}/{max_verify_attempts})")
+                                self.logger.warning(
+                                    f"IPv6 {obtained_ipv6} not yet ready, waiting... (attempt {attempt + 1}/{max_verify_attempts})"
+                                )
                                 time.sleep(2)
                             else:
-                                self.logger.error(f"✗ IPv6 {obtained_ipv6} still not ready after {max_verify_attempts} attempts")
+                                self.logger.error(
+                                    f"✗ IPv6 {obtained_ipv6} still not ready after {max_verify_attempts} attempts"
+                                )
                 else:
-                    self.logger.error(f"✗ Failed to configure IPv6 {obtained_ipv6} on {self.interface}")
+                    self.logger.error(
+                        f"✗ Failed to configure IPv6 {obtained_ipv6} on {self.interface}"
+                    )
 
             # CRITICAL FIX: Return the obtained IPv6 from the finally block
             # Without this, the function returns None even on success
@@ -534,7 +580,11 @@ class DHCPv6Manager:
         try:
             # Enable IPv6 forwarding and accept RA
             subprocess.run(
-                [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.disable_ipv6=0"],
+                [
+                    cfg.CMD_SYSCTL,
+                    "-w",
+                    f"net.ipv6.conf.{self.interface}.disable_ipv6=0",
+                ],
                 check=True,
                 capture_output=True,
             )
@@ -569,9 +619,18 @@ class DHCPv6Manager:
         """
         try:
             subprocess.run(
-                [cfg.CMD_IP, "-6", "neigh", "add", "proxy", ipv6, "dev", self.interface],
+                [
+                    cfg.CMD_IP,
+                    "-6",
+                    "neigh",
+                    "add",
+                    "proxy",
+                    ipv6,
+                    "dev",
+                    self.interface,
+                ],
                 check=True,
-                capture_output=True
+                capture_output=True,
             )
             self.logger.debug(f"Enabled Proxy NDP for {ipv6} on {self.interface}")
             return True
@@ -605,7 +664,9 @@ class DHCPv6Manager:
                     self.logger.debug("DHCPv6 request succeeded")
                     return True
                 else:
-                    self.logger.debug(f"DHCPv6 request failed with exit code {return_code}")
+                    self.logger.debug(
+                        f"DHCPv6 request failed with exit code {return_code}"
+                    )
                     return False
 
             except subprocess.TimeoutExpired:
@@ -912,69 +973,179 @@ class FirewallManager:
 
             # ICMPv6 Type 128: Echo Request (ping)
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "128", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "INPUT",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "128",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "FORWARD", "-p", "ipv6-icmp", "--icmpv6-type", "128", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "FORWARD",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "128",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
 
             # ICMPv6 Type 129: Echo Reply (ping response)
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "129", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "INPUT",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "129",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "FORWARD", "-p", "ipv6-icmp", "--icmpv6-type", "129", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "FORWARD",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "129",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
 
             # ICMPv6 Type 133: Router Solicitation (ESSENTIAL for SLAAC)
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "133", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "INPUT",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "133",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
 
             # ICMPv6 Type 134: Router Advertisement (ESSENTIAL for SLAAC)
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "134", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "INPUT",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "134",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
 
             # ICMPv6 Type 135: Neighbor Solicitation (ESSENTIAL for NDP/address resolution)
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "135", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "INPUT",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "135",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "FORWARD", "-p", "ipv6-icmp", "--icmpv6-type", "135", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "FORWARD",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "135",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
 
             # ICMPv6 Type 136: Neighbor Advertisement (ESSENTIAL for NDP/address resolution)
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "136", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "INPUT",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "136",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "FORWARD", "-p", "ipv6-icmp", "--icmpv6-type", "136", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "FORWARD",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "136",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
 
             # ICMPv6 Type 137: Redirect Message
             subprocess.run(
-                [cfg.CMD_IP6TABLES, "-I", "INPUT", "-p", "ipv6-icmp", "--icmpv6-type", "137", "-j", "ACCEPT"],
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "INPUT",
+                    "-p",
+                    "ipv6-icmp",
+                    "--icmpv6-type",
+                    "137",
+                    "-j",
+                    "ACCEPT",
+                ],
                 check=False,
                 capture_output=True,
             )
@@ -996,7 +1167,9 @@ class FirewallManager:
                 capture_output=True,
             )
 
-            self.logger.info("ICMP/ICMPv6 traffic allowed (ping enabled with NDP support)")
+            self.logger.info(
+                "ICMP/ICMPv6 traffic allowed (ping enabled with NDP support)"
+            )
             return True
         except Exception as e:
             self.logger.error(f"Failed to enable ICMP: {e}")
@@ -1042,11 +1215,17 @@ class SocatProxyManager:
 
     def __init__(self):
         self.logger = logging.getLogger("SocatProxyManager")
-        self.proxies: Dict[str, Dict[int, subprocess.Popen]] = {}  # {mac: {port: process}}
-        self.log_files: Dict[str, Dict[int, object]] = {}  # {mac: {port: log_file_handle}}
+        self.proxies: Dict[str, Dict[int, subprocess.Popen]] = (
+            {}
+        )  # {mac: {port: process}}
+        self.log_files: Dict[str, Dict[int, object]] = (
+            {}
+        )  # {mac: {port: log_file_handle}}
         self._lock = threading.Lock()
 
-    def start_proxy_for_device(self, mac: str, device_ipv4: str, device_ipv6: str, port_map: Dict[int, int]) -> bool:
+    def start_proxy_for_device(
+        self, mac: str, device_ipv4: str, device_ipv6: str, port_map: Dict[int, int]
+    ) -> bool:
         """
         Start socat proxies for all ports for a device.
 
@@ -1059,7 +1238,9 @@ class SocatProxyManager:
         Returns:
             True if all proxies started successfully
         """
-        self.logger.info(f"Starting IPv6→IPv4 proxies for device {device_ipv4} (IPv6: {device_ipv6}, MAC: {mac})")
+        self.logger.info(
+            f"Starting IPv6→IPv4 proxies for device {device_ipv4} (IPv6: {device_ipv6}, MAC: {mac})"
+        )
 
         with self._lock:
             if mac not in self.proxies:
@@ -1067,7 +1248,9 @@ class SocatProxyManager:
 
             success_count = 0
             for gateway_port, device_port in port_map.items():
-                if self._start_single_proxy(mac, device_ipv4, device_ipv6, gateway_port, device_port):
+                if self._start_single_proxy(
+                    mac, device_ipv4, device_ipv6, gateway_port, device_port
+                ):
                     success_count += 1
 
             self.logger.info(
@@ -1075,7 +1258,14 @@ class SocatProxyManager:
             )
             return success_count > 0
 
-    def _start_single_proxy(self, mac: str, device_ipv4: str, device_ipv6: str, gateway_port: int, device_port: int) -> bool:
+    def _start_single_proxy(
+        self,
+        mac: str,
+        device_ipv4: str,
+        device_ipv6: str,
+        gateway_port: int,
+        device_port: int,
+    ) -> bool:
         """Start a single socat proxy for one port"""
         try:
             # Check if proxy already running for this port
@@ -1092,10 +1282,10 @@ class SocatProxyManager:
 
             # Determine if this port needs special protocol handling
             # Telnet ports: 23, 2323 (and any port that maps to 23)
-            is_telnet_port = (device_port == 23 or gateway_port == 2323)
+            is_telnet_port = device_port == 23 or gateway_port == 2323
 
             # HTTP/HTTPS ports: 80, 443, 8080, 8443 (and any port that maps to 80/443)
-            is_http_port = (device_port in [80, 443] or gateway_port in [8080, 8443])
+            is_http_port = device_port in [80, 443] or gateway_port in [8080, 8443]
 
             # Verbose logging flags for socat
             # -d -d: Double verbose mode - logs connections and data transfer
@@ -1125,7 +1315,7 @@ class SocatProxyManager:
                 cfg.CMD_SOCAT,
                 *verbose_flags,
                 f"TCP6-LISTEN:{gateway_port},bind={device_ipv6},fork,reuseaddr",
-                f"TCP4:{device_ipv4}:{device_port}"  # No source binding - let kernel decide!
+                f"TCP4:{device_ipv4}:{device_port}",  # No source binding - let kernel decide!
             ]
 
             # Start socat in background with logging
@@ -1145,7 +1335,7 @@ class SocatProxyManager:
                 socat_cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,  # Merge stderr to stdout
-                start_new_session=True  # Detach from parent
+                start_new_session=True,  # Detach from parent
             )
 
             # Store log file handle so we can close it later
@@ -1205,7 +1395,9 @@ class SocatProxyManager:
                             process.wait()
                         self.logger.debug(f"Stopped proxy for {mac} port {port}")
                 except Exception as e:
-                    self.logger.error(f"Error stopping proxy for {mac} port {port}: {e}")
+                    self.logger.error(
+                        f"Error stopping proxy for {mac} port {port}: {e}"
+                    )
 
                 # CRITICAL FIX: Close log file handle to prevent resource leak
                 if mac in self.log_files and port in self.log_files[mac]:
@@ -1213,7 +1405,9 @@ class SocatProxyManager:
                         self.log_files[mac][port].close()
                         del self.log_files[mac][port]
                     except Exception as e:
-                        self.logger.error(f"Error closing log file for {mac} port {port}: {e}")
+                        self.logger.error(
+                            f"Error closing log file for {mac} port {port}: {e}"
+                        )
 
             del self.proxies[mac]
             # Clean up log files dict if empty
@@ -1239,13 +1433,13 @@ class SocatProxyManager:
                 for port, process in self.proxies[mac].items():
                     proxies_status[port] = {
                         "pid": process.pid,
-                        "running": process.poll() is None
+                        "running": process.poll() is None,
                     }
 
                 return {
                     "mac": mac,
                     "proxies": proxies_status,
-                    "running": len(proxies_status) > 0
+                    "running": len(proxies_status) > 0,
                 }
             else:
                 # Status for all devices
@@ -1255,7 +1449,7 @@ class SocatProxyManager:
                     for port, process in ports.items():
                         proxies_status[port] = {
                             "pid": process.pid,
-                            "running": process.poll() is None
+                            "running": process.poll() is None,
                         }
                     all_status[mac] = proxies_status
 
@@ -1271,6 +1465,10 @@ class WANMonitor:
         self.iface = NetworkInterface(interface)
         self.last_ipv4: Optional[List[str]] = None
         self.last_ipv6: Optional[List[str]] = None
+        self.last_change_time: Optional[float] = None  # Track when last change occurred
+        self.cooldown_seconds = (
+            30  # Minimum time between detecting changes (prevents loop)
+        )
 
     def get_current_addresses(self) -> tuple:
         """Get current IPv4 and IPv6 addresses on WAN interface"""
@@ -1282,6 +1480,10 @@ class WANMonitor:
         """
         Check if WAN network has changed.
         Returns True if network changed, False otherwise.
+
+        IMPORTANT: Includes cooldown mechanism to prevent infinite loops!
+        - If a change was detected recently (within cooldown_seconds), ignore transient changes
+        - This prevents the loop: IPv6 appears → triggers reconfiguration → IPv6 cleared → triggers again
         """
         current_ipv4, current_ipv6 = self.get_current_addresses()
 
@@ -1289,6 +1491,7 @@ class WANMonitor:
         if self.last_ipv4 is None and self.last_ipv6 is None:
             self.last_ipv4 = current_ipv4
             self.last_ipv6 = current_ipv6
+            self.last_change_time = None
             self.logger.info(
                 f"WAN monitor initialized - IPv4: {current_ipv4}, IPv6: {current_ipv6}"
             )
@@ -1299,6 +1502,22 @@ class WANMonitor:
         ipv6_changed = set(current_ipv6) != set(self.last_ipv6 or [])
 
         if ipv4_changed or ipv6_changed:
+            # CRITICAL: Check cooldown to prevent infinite loop
+            current_time = time.time()
+            if self.last_change_time is not None:
+                time_since_last_change = current_time - self.last_change_time
+
+                if time_since_last_change < self.cooldown_seconds:
+                    # Within cooldown period - ignore this change (likely transient)
+                    self.logger.debug(
+                        f"WAN change detected but ignoring (cooldown: {time_since_last_change:.1f}s < {self.cooldown_seconds}s)"
+                    )
+                    # Update tracking but don't trigger reconfiguration
+                    self.last_ipv4 = current_ipv4
+                    self.last_ipv6 = current_ipv6
+                    return False
+
+            # Outside cooldown or first change - this is a real network change
             self.logger.warning("WAN network change detected!")
             if ipv4_changed:
                 self.logger.warning(
@@ -1309,9 +1528,10 @@ class WANMonitor:
                     f"  IPv6 changed: {self.last_ipv6} → {current_ipv6}"
                 )
 
-            # Update last known addresses
+            # Update last known addresses and change time
             self.last_ipv4 = current_ipv4
             self.last_ipv6 = current_ipv6
+            self.last_change_time = current_time
 
             return True
 
@@ -1347,7 +1567,9 @@ class GatewayService:
         self.eth1 = NetworkInterface(cfg.ETH1_INTERFACE)
 
         # WAN network monitor (for automatic rediscovery on network changes)
-        self.wan_monitor = WANMonitor(interface=cfg.ETH0_INTERFACE) if cfg.ENABLE_WAN_MONITOR else None
+        self.wan_monitor = (
+            WANMonitor(interface=cfg.ETH0_INTERFACE) if cfg.ENABLE_WAN_MONITOR else None
+        )
 
         self.api_server: Optional[GatewayAPIServer] = None
 
@@ -1630,13 +1852,17 @@ class GatewayService:
 
                                 # Stop proxies for old device
                                 if self.proxy_manager:
-                                    self.proxy_manager.stop_proxies_for_device(replaced_device_mac)
+                                    self.proxy_manager.stop_proxies_for_device(
+                                        replaced_device_mac
+                                    )
 
                                 # Remove old device
                                 del self.devices[replaced_device_mac]
                                 self.arp_monitor.known_macs.discard(replaced_device_mac)
 
-                                self.logger.info(f"✓ Removed old device {replaced_device_mac}")
+                                self.logger.info(
+                                    f"✓ Removed old device {replaced_device_mac}"
+                                )
 
                         # Check if this MAC is already being tracked
                         if mac in self.devices:
@@ -1659,7 +1885,9 @@ class GatewayService:
                                 f"[Replaced: {replaced_device_mac}]"
                             )
                         else:
-                            self.logger.info(f"🆕 New device discovered: {mac} (IPv4: {ipv4})")
+                            self.logger.info(
+                                f"🆕 New device discovered: {mac} (IPv4: {ipv4})"
+                            )
 
                         # Spawn discovery thread (with retry on failure)
                         max_retries = 3
@@ -1692,7 +1920,9 @@ class GatewayService:
                                     with self._devices_lock:
                                         if mac in self.devices:
                                             self.devices[mac].status = "error"
-                                            self.logger.error(f"Marked device {mac} as error due to thread spawn failure")
+                                            self.logger.error(
+                                                f"Marked device {mac} as error due to thread spawn failure"
+                                            )
 
                 time.sleep(cfg.ARP_MONITOR_INTERVAL)
 
@@ -1742,15 +1972,25 @@ class GatewayService:
                         self.logger.info(f"Device {mac} → WAN IPv6: {ipv6}")
 
                         # Verify IPv6 is actually configured on eth0
-                        self.logger.info(f"Verifying IPv6 {ipv6} is configured on eth0...")
+                        self.logger.info(
+                            f"Verifying IPv6 {ipv6} is configured on eth0..."
+                        )
                         ipv6_addresses_on_eth0 = self.eth0.get_ipv6_addresses()
 
                         if ipv6 in ipv6_addresses_on_eth0:
-                            self.logger.info(f"✓ Confirmed: IPv6 {ipv6} is present on eth0")
+                            self.logger.info(
+                                f"✓ Confirmed: IPv6 {ipv6} is present on eth0"
+                            )
                         else:
-                            self.logger.warning(f"⚠ WARNING: IPv6 {ipv6} NOT found on eth0!")
-                            self.logger.warning(f"  eth0 IPv6 addresses: {ipv6_addresses_on_eth0}")
-                            self.logger.warning(f"  This will cause HAProxy/socat bind to FAIL!")
+                            self.logger.warning(
+                                f"⚠ WARNING: IPv6 {ipv6} NOT found on eth0!"
+                            )
+                            self.logger.warning(
+                                f"  eth0 IPv6 addresses: {ipv6_addresses_on_eth0}"
+                            )
+                            self.logger.warning(
+                                f"  This will cause HAProxy/socat bind to FAIL!"
+                            )
 
                     elif device:
                         self.logger.warning(f"Failed to obtain IPv6 for {mac}")
@@ -1779,18 +2019,25 @@ class GatewayService:
                     if cfg.ENABLE_AUTO_PORT_FORWARDING:
                         # IPv4 port forwarding (if device has LAN IPv4)
                         if device.ipv4_address:
-                            self._setup_auto_port_forwarding_ipv4(device.ipv4_address, mac)
+                            self._setup_auto_port_forwarding_ipv4(
+                                device.ipv4_address, mac
+                            )
 
                         # IPv6→IPv4 proxying (if enabled and device has both IPv4 and IPv6)
                         # Use separate port mapping for IPv6 (only firewall-allowed ports)
-                        if cfg.ENABLE_IPV6_TO_IPV4_PROXY and self.proxy_manager and device.ipv4_address and device.ipv6_address:
+                        if (
+                            cfg.ENABLE_IPV6_TO_IPV4_PROXY
+                            and self.proxy_manager
+                            and device.ipv4_address
+                            and device.ipv6_address
+                        ):
                             # Start proxies with FIREWALL-ALLOWED ports only (telnet 23, HTTP 80)
                             # Pass device's IPv6 address so proxy binds to it specifically
                             self.proxy_manager.start_proxy_for_device(
                                 mac=mac,
                                 device_ipv4=device.ipv4_address,
                                 device_ipv6=device.ipv6_address,  # Device's unique IPv6 address
-                                port_map=cfg.IPV6_PROXY_PORT_FORWARDS  # Only telnet & HTTP!
+                                port_map=cfg.IPV6_PROXY_PORT_FORWARDS,  # Only telnet & HTTP!
                             )
                 else:
                     device.status = "failed"
@@ -1811,7 +2058,9 @@ class GatewayService:
         Setup IPv4 port forwarding using iptables.
         Forwards common ports from gateway WAN to device LAN IP.
         """
-        self.logger.info(f"Setting up IPv4 port forwarding for {device_ip} (MAC: {mac})")
+        self.logger.info(
+            f"Setting up IPv4 port forwarding for {device_ip} (MAC: {mac})"
+        )
 
         wan_interface = cfg.ETH0_INTERFACE
         lan_interface = cfg.ETH1_INTERFACE
@@ -1821,14 +2070,20 @@ class GatewayService:
                 # DNAT rule: Forward traffic from WAN port to device
                 dnat_cmd = [
                     cfg.CMD_IPTABLES,
-                    "-t", "nat",
+                    "-t",
+                    "nat",
                     "-C",  # Check if rule exists
                     "PREROUTING",
-                    "-i", wan_interface,
-                    "-p", "tcp",
-                    "--dport", str(gateway_port),
-                    "-j", "DNAT",
-                    "--to-destination", f"{device_ip}:{device_port}"
+                    "-i",
+                    wan_interface,
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    str(gateway_port),
+                    "-j",
+                    "DNAT",
+                    "--to-destination",
+                    f"{device_ip}:{device_port}",
                 ]
 
                 # Check if rule already exists
@@ -1843,38 +2098,58 @@ class GatewayService:
                     # FORWARD rule: Allow forwarded traffic
                     forward_cmd = [
                         cfg.CMD_IPTABLES,
-                        "-A", "FORWARD",
-                        "-i", wan_interface,
-                        "-o", lan_interface,
-                        "-p", "tcp",
-                        "-d", device_ip,
-                        "--dport", str(device_port),
-                        "-j", "ACCEPT"
+                        "-A",
+                        "FORWARD",
+                        "-i",
+                        wan_interface,
+                        "-o",
+                        lan_interface,
+                        "-p",
+                        "tcp",
+                        "-d",
+                        device_ip,
+                        "--dport",
+                        str(device_port),
+                        "-j",
+                        "ACCEPT",
                     ]
                     subprocess.run(forward_cmd, check=True, capture_output=True)
 
                     # Return traffic
                     return_cmd = [
                         cfg.CMD_IPTABLES,
-                        "-A", "FORWARD",
-                        "-i", lan_interface,
-                        "-o", wan_interface,
-                        "-p", "tcp",
-                        "-s", device_ip,
-                        "--sport", str(device_port),
-                        "-j", "ACCEPT"
+                        "-A",
+                        "FORWARD",
+                        "-i",
+                        lan_interface,
+                        "-o",
+                        wan_interface,
+                        "-p",
+                        "tcp",
+                        "-s",
+                        device_ip,
+                        "--sport",
+                        str(device_port),
+                        "-j",
+                        "ACCEPT",
                     ]
                     subprocess.run(return_cmd, check=True, capture_output=True)
 
                     # Local access (from gateway itself)
                     local_cmd = [
                         cfg.CMD_IPTABLES,
-                        "-t", "nat",
-                        "-A", "OUTPUT",
-                        "-p", "tcp",
-                        "--dport", str(gateway_port),
-                        "-j", "DNAT",
-                        "--to-destination", f"{device_ip}:{device_port}"
+                        "-t",
+                        "nat",
+                        "-A",
+                        "OUTPUT",
+                        "-p",
+                        "tcp",
+                        "--dport",
+                        str(gateway_port),
+                        "-j",
+                        "DNAT",
+                        "--to-destination",
+                        f"{device_ip}:{device_port}",
                     ]
                     subprocess.run(local_cmd, check=True, capture_output=True)
 
@@ -1911,7 +2186,9 @@ class GatewayService:
         - telnet device_ipv6 23                (NOT :2323)
         - ssh user@device_ipv6                 (port 22, NOT :2222)
         """
-        self.logger.info(f"Setting up IPv6 firewall rules for {device_ipv6} (MAC: {mac})")
+        self.logger.info(
+            f"Setting up IPv6 firewall rules for {device_ipv6} (MAC: {mac})"
+        )
 
         wan_interface = cfg.ETH0_INTERFACE
 
@@ -1922,10 +2199,14 @@ class GatewayService:
                     cfg.CMD_IP6TABLES,
                     "-C",  # Check
                     "FORWARD",
-                    "-p", "tcp",
-                    "-d", device_ipv6,
-                    "--dport", str(device_port),  # Direct port, no translation
-                    "-j", "ACCEPT"
+                    "-p",
+                    "tcp",
+                    "-d",
+                    device_ipv6,
+                    "--dport",
+                    str(device_port),  # Direct port, no translation
+                    "-j",
+                    "ACCEPT",
                 ]
 
                 check_result = subprocess.run(check_cmd, capture_output=True)
@@ -1935,22 +2216,32 @@ class GatewayService:
                     # FORWARD rule: Allow traffic to device's real port
                     forward_cmd = [
                         cfg.CMD_IP6TABLES,
-                        "-A", "FORWARD",
-                        "-p", "tcp",
-                        "-d", device_ipv6,
-                        "--dport", str(device_port),
-                        "-j", "ACCEPT"
+                        "-A",
+                        "FORWARD",
+                        "-p",
+                        "tcp",
+                        "-d",
+                        device_ipv6,
+                        "--dport",
+                        str(device_port),
+                        "-j",
+                        "ACCEPT",
                     ]
                     subprocess.run(forward_cmd, check=True, capture_output=True)
 
                     # Return traffic
                     return_cmd = [
                         cfg.CMD_IP6TABLES,
-                        "-A", "FORWARD",
-                        "-p", "tcp",
-                        "-s", device_ipv6,
-                        "--sport", str(device_port),
-                        "-j", "ACCEPT"
+                        "-A",
+                        "FORWARD",
+                        "-p",
+                        "tcp",
+                        "-s",
+                        device_ipv6,
+                        "--sport",
+                        str(device_port),
+                        "-j",
+                        "ACCEPT",
                     ]
                     subprocess.run(return_cmd, check=True, capture_output=True)
 
@@ -2066,9 +2357,7 @@ class GatewayService:
                     devices_to_rediscover.append(mac)
                 else:
                     device.status = "inactive"
-                    self.logger.info(
-                        f"Device {mac} not in ARP table, marking inactive"
-                    )
+                    self.logger.info(f"Device {mac} not in ARP table, marking inactive")
 
             # Save updated device states
             self.device_store.save_devices(self.devices)
