@@ -168,7 +168,12 @@ VALIDATE_IPV6_FORMAT = True
 VALIDATE_IPV4_FORMAT = False  # Less critical for this use case
 
 # API Server (optional - for status/monitoring)
-API_ENABLED = True
+# DISABLED by default - gateway works fine without it
+# Enable only if you need REST API for external monitoring
+# API Server (optional - for status/monitoring)
+# IMPORTANT: API is completely optional - gateway works fine without it
+# Disable for production/embedded systems to save resources
+API_ENABLED = False  # Disabled by default - gateway works without it
 API_HOST = "0.0.0.0"  # Bind to all interfaces (use "127.0.0.1" for localhost only)
 API_PORT = 5050
 API_LOG_REQUESTS = False
