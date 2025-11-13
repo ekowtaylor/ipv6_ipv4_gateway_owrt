@@ -139,6 +139,11 @@ if command -v opkg >/dev/null 2>&1; then
     opkg install odhcp6c 2>/dev/null || echo -e "${YELLOW}⚠ odhcp6c installation failed or already installed${NC}"
     opkg install iptables ip6tables 2>/dev/null || echo -e "${YELLOW}⚠ iptables installation failed or already installed${NC}"
 
+    # IPv6 NAT support (CRITICAL for IPv6→IPv4 proxying with SNAT)
+    echo -e "${BLUE}Installing IPv6 NAT kernel modules...${NC}"
+    opkg install kmod-ipt-nat6 2>/dev/null || echo -e "${YELLOW}⚠ kmod-ipt-nat6 installation failed or already installed${NC}"
+    opkg install kmod-nf-nat6 2>/dev/null || echo -e "${YELLOW}⚠ kmod-nf-nat6 installation failed or already installed${NC}"
+
     # IPv6→IPv4 proxy options (required for IPv6 clients to access IPv4-only devices)
     echo -e "${BLUE}Installing IPv6→IPv4 proxy (socat is default, HAProxy is optional)...${NC}"
     opkg install socat 2>/dev/null || echo -e "${YELLOW}⚠ socat installation failed or already installed${NC}"
