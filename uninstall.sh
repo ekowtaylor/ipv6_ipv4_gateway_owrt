@@ -303,19 +303,23 @@ if command -v ip >/dev/null 2>&1; then
     fi
 fi
 
-# CRITICAL: Restore IPv6 sysctl settings on eth0
+# CRITICAL: Restore IPv6 sysctl settings on eth0 BEFORE restarting network
 echo -e "${BLUE}- Restoring IPv6 sysctl settings on eth0...${NC}"
 if command -v sysctl >/dev/null 2>&1; then
-    # Restore default IPv6 settings
+    # IMPORTANT: Restore forwarding FIRST before setting accept_ra!
+    # Reason: If forwarding=1, then accept_ra=1 is ignored by kernel
+    # We disable forwarding first so accept_ra can be properly set
+    sysctl -w net.ipv4.ip_forward=0 2>/dev/null || true
+    sysctl -w net.ipv6.conf.all.forwarding=0 2>/dev/null || true
+    sysctl -w net.ipv6.conf.eth0.forwarding=0 2>/dev/null || true
+
+    # NOW set accept_ra (with forwarding=0, accept_ra=1 will work)
     sysctl -w net.ipv6.conf.eth0.accept_ra=1 2>/dev/null || true
+    sysctl -w net.ipv6.conf.all.accept_ra=1 2>/dev/null || true
     sysctl -w net.ipv6.conf.eth0.autoconf=1 2>/dev/null || true
     sysctl -w net.ipv6.conf.eth0.disable_ipv6=0 2>/dev/null || true
 
-    # Restore forwarding to safe default (0 = disabled)
-    sysctl -w net.ipv4.ip_forward=0 2>/dev/null || true
-    sysctl -w net.ipv6.conf.all.forwarding=0 2>/dev/null || true
-
-    echo -e "${GREEN}  ✓ Restored IPv6 sysctl settings${NC}"
+    echo -e "${GREEN}  ✓ Restored IPv6 sysctl settings (forwarding disabled, accept_ra enabled)${NC}"
 fi
 
 # CRITICAL: Restart network to apply clean state
@@ -323,6 +327,38 @@ echo -e "${BLUE}- Restarting network to apply clean state...${NC}"
 /etc/init.d/network restart 2>/dev/null || true
 sleep 3
 echo -e "${GREEN}  ✓ Network restarted${NC}"
+
+# CRITICAL: Restore firewall service
+echo -e "${BLUE}- Restoring firewall service...${NC}"
+if [ -x /etc/init.d/firewall ]; then
+    /etc/init.d/firewall restart 2>/dev/null || true
+    echo -e "${GREEN}  ✓ Firewall service restarted${NC}"
+else
+    echo -e "${YELLOW}  ⚠ Firewall service not found (may be normal on some systems)${NC}"
+fi
+
+# CRITICAL: Trigger Router Solicitation to get NEW IPv6 for restored MAC
+echo -e "${BLUE}- Requesting IPv6 address from router (Router Solicitation)...${NC}"
+if command -v ping6 >/dev/null 2>&1; then
+    # Send Router Solicitation to all-routers multicast
+    ping6 -c 1 -W 2 -I eth0 ff02::2 >/dev/null 2>&1 || true
+    echo -e "${GREEN}  ✓ Router Solicitation sent${NC}"
+
+    # Wait for Router Advertisement and SLAAC
+    echo -e "${BLUE}  Waiting 10 seconds for SLAAC to complete...${NC}"
+    sleep 10
+
+    # Verify IPv6 was obtained
+    ETH0_IPV6=$(ip -6 addr show eth0 2>/dev/null | grep 'inet6' | grep -v 'fe80' | awk '{print $2}' | head -1)
+    if [ -n "$ETH0_IPV6" ]; then
+        echo -e "${GREEN}  ✓ IPv6 address obtained: ${ETH0_IPV6}${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ No IPv6 address obtained (may take longer)${NC}"
+        echo -e "${YELLOW}    Check with: ip -6 addr show eth0${NC}"
+    fi
+else
+    echo -e "${YELLOW}  ⚠ ping6 not available, skipping Router Solicitation${NC}"
+fi
 
 # Restore IPv6 listening on LuCI and SSH (if backups exist)
 echo -e "${BLUE}- Restoring LuCI and SSH IPv6 listening (if backups exist)...${NC}"
