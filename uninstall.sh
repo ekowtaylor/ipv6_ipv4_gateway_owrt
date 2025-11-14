@@ -322,6 +322,42 @@ if command -v sysctl >/dev/null 2>&1; then
     echo -e "${GREEN}  ✓ Restored IPv6 sysctl settings (forwarding disabled, accept_ra enabled)${NC}"
 fi
 
+# CRITICAL: Restore UCI network settings (if modified during install)
+echo -e "${BLUE}- Restoring UCI network settings...${NC}"
+if command -v uci >/dev/null 2>&1; then
+    # Check if we have a backup from install
+    LATEST_UCI_BACKUP=$(ls -t "$CONFIG_DIR"/network.uci_backup.* 2>/dev/null | head -1)
+
+    if [ -n "$LATEST_UCI_BACKUP" ] && [ -f "$LATEST_UCI_BACKUP" ]; then
+        echo -e "${BLUE}  Found UCI backup: $LATEST_UCI_BACKUP${NC}"
+        echo -e "${BLUE}  Restoring original accept_ra settings...${NC}"
+
+        # Restore the backed up network config
+        cp "$LATEST_UCI_BACKUP" /etc/config/network 2>/dev/null || true
+
+        # Reload UCI
+        uci commit network 2>/dev/null || true
+
+        echo -e "${GREEN}  ✓ UCI network config restored from backup${NC}"
+    else
+        # No backup found - set safe defaults
+        echo -e "${YELLOW}  No UCI backup found - setting safe defaults${NC}"
+
+        # Remove gateway-specific accept_ra settings (revert to OpenWrt defaults)
+        uci delete network.wan.accept_ra 2>/dev/null || true
+        uci delete network.wan.send_rs 2>/dev/null || true
+        uci delete network.wan6.accept_ra 2>/dev/null || true
+        uci delete network.wan6.send_rs 2>/dev/null || true
+
+        # Commit changes
+        uci commit network 2>/dev/null || true
+
+        echo -e "${GREEN}  ✓ Reset UCI to safe defaults${NC}"
+    fi
+else
+    echo -e "${BLUE}  UCI not available (not OpenWrt)${NC}"
+fi
+
 # CRITICAL: Restart network to apply clean state
 echo -e "${BLUE}- Restarting network to apply clean state...${NC}"
 /etc/init.d/network restart 2>/dev/null || true

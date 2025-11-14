@@ -889,6 +889,74 @@ else
 fi
 echo ""
 
+# Step 8.6: Configure OpenWrt netifd for IPv6 on eth0 (CRITICAL!)
+echo -e "${YELLOW}Step 8.6: Configuring OpenWrt netifd for IPv6...${NC}"
+
+if command -v uci >/dev/null 2>&1; then
+    # Check if eth0 is managed by netifd (network.wan.device or network.wan.ifname)
+    WAN_DEVICE=$(uci get network.wan.device 2>/dev/null || uci get network.wan.ifname 2>/dev/null || echo "")
+
+    if [ "$WAN_DEVICE" = "eth0" ] || [ -n "$(uci show network | grep -E 'ifname.*eth0|device.*eth0')" ]; then
+        echo -e "${BLUE}Detected: OpenWrt netifd is managing eth0${NC}"
+        echo -e "${YELLOW}This requires UCI configuration to prevent IPv6 conflicts!${NC}"
+        echo ""
+
+        # Backup network config before modifying
+        if [ -f /etc/config/network ]; then
+            NETWORK_BACKUP="$CONFIG_DIR/network.uci_backup.$(date +%Y%m%d_%H%M%S)"
+            mkdir -p "$CONFIG_DIR"
+            cp /etc/config/network "$NETWORK_BACKUP"
+            echo -e "${BLUE}  Backed up network config to: $NETWORK_BACKUP${NC}"
+        fi
+
+        echo -e "${BLUE}  Configuring WAN interface for IPv6 with accept_ra=2...${NC}"
+
+        # CRITICAL: Configure accept_ra=2 for WAN interface
+        # This allows Router Advertisements even with IPv6 forwarding enabled
+        # Without this, eth0 will NOT get IPv6 from router!
+        uci set network.wan.accept_ra='2' 2>/dev/null || true
+        uci set network.wan.send_rs='1' 2>/dev/null || true
+
+        # Also configure wan6 if it exists
+        if uci show network.wan6 >/dev/null 2>&1; then
+            uci set network.wan6.accept_ra='2' 2>/dev/null || true
+            uci set network.wan6.send_rs='1' 2>/dev/null || true
+        fi
+
+        # Commit changes
+        uci commit network 2>/dev/null || true
+
+        echo -e "${GREEN}  ✓ UCI configured: accept_ra=2, send_rs=1${NC}"
+        echo -e "${YELLOW}  This ensures eth0 gets IPv6 even with forwarding enabled!${NC}"
+        echo ""
+        echo -e "${BLUE}  Restarting network to apply UCI settings...${NC}"
+        /etc/init.d/network restart 2>/dev/null || true
+
+        # Wait for network to stabilize
+        echo -e "${BLUE}  Waiting 10 seconds for network to stabilize...${NC}"
+        sleep 10
+
+        # Verify IPv6 obtained
+        ETH0_IPV6=$(ip -6 addr show eth0 2>/dev/null | grep 'inet6' | grep -v 'fe80' | awk '{print $2}' | head -1)
+        if [ -n "$ETH0_IPV6" ]; then
+            echo -e "${GREEN}  ✓ IPv6 obtained on eth0: ${ETH0_IPV6}${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ No IPv6 on eth0 yet (may take a few more seconds)${NC}"
+            echo -e "${YELLOW}    Run diagnose-ipv6.sh to troubleshoot if needed${NC}"
+        fi
+
+    else
+        echo -e "${BLUE}eth0 not managed by netifd (device: ${WAN_DEVICE:-none})${NC}"
+        echo -e "${GREEN}✓ No UCI configuration needed${NC}"
+        echo -e "${BLUE}  Gateway will manage IPv6 via sysctl directly${NC}"
+    fi
+else
+    echo -e "${BLUE}UCI not available (not OpenWrt)${NC}"
+    echo -e "${GREEN}✓ Skipping UCI configuration${NC}"
+    echo -e "${BLUE}  Gateway will manage IPv6 via sysctl directly${NC}"
+fi
+echo ""
+
 # Step 9: Create helper scripts (API-based and direct)
 echo -e "${YELLOW}Step 9: Creating helper scripts...${NC}"
 
