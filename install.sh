@@ -297,8 +297,13 @@ echo ""
 LAN_INTERFACE="eth1"
 LAN_DEVICES_FOUND=0
 
+# Cache command availability (avoid repeated checks)
+HAS_IP_CMD=$(command -v ip >/dev/null 2>&1 && echo "yes" || echo "no")
+HAS_FPING=$(command -v fping >/dev/null 2>&1 && echo "yes" || echo "no")
+HAS_ARP=$(command -v arp >/dev/null 2>&1 && echo "yes" || echo "no")
+
 # Check if eth1 exists and is up
-if command -v ip >/dev/null 2>&1; then
+if [ "$HAS_IP_CMD" = "yes" ]; then
     if ip link show "$LAN_INTERFACE" >/dev/null 2>&1; then
         echo -e "${GREEN}✓ LAN interface $LAN_INTERFACE found${NC}"
 
@@ -308,37 +313,38 @@ if command -v ip >/dev/null 2>&1; then
         else
             echo -e "${YELLOW}⚠ LAN interface is DOWN - bringing it up...${NC}"
             ip link set "$LAN_INTERFACE" up 2>/dev/null || echo -e "${YELLOW}  Could not bring up interface (may need manual configuration)${NC}"
-            sleep 2
+            sleep 1
         fi
 
-        # Get LAN IP address
-        LAN_IP=$(ip -4 addr show "$LAN_INTERFACE" 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
+        # Get LAN IP address (optimized - single command)
+        LAN_IP=$(ip -4 addr show "$LAN_INTERFACE" 2>/dev/null | awk '/inet / {print $2}' | cut -d'/' -f1 | head -1)
         if [ -n "$LAN_IP" ]; then
             echo -e "${GREEN}✓ LAN IPv4: $LAN_IP${NC}"
 
-            # Extract subnet
-            LAN_SUBNET=$(echo "$LAN_IP" | cut -d'.' -f1-3)
+            # Extract subnet (optimized)
+            LAN_SUBNET="${LAN_IP%.*}"
 
             # Quick ping scan of likely device IPs
             echo -e "${BLUE}Scanning for devices on ${LAN_SUBNET}.0/24...${NC}"
 
-            # Try fping first (fast parallel ping)
-            if command -v fping >/dev/null 2>&1; then
+            # OPTIMIZED: Parallel ping scan (much faster!)
+            if [ "$HAS_FPING" = "yes" ]; then
                 echo -e "${BLUE}Using fping for fast scan...${NC}"
-                SCAN_RESULT=$(fping -a -g "${LAN_SUBNET}.100" "${LAN_SUBNET}.150" 2>/dev/null)
+                fping -q -a -g "${LAN_SUBNET}.100" "${LAN_SUBNET}.150" 2>/dev/null &
+                fping -q -a -r 0 -t 200 "${LAN_SUBNET}.1" "${LAN_SUBNET}.129" "${LAN_SUBNET}.254" 2>/dev/null &
+                wait
             else
-                # Fallback to regular ping (slower)
-                echo -e "${BLUE}Using ping for scan (this may take 10-20 seconds)...${NC}"
-                SCAN_RESULT=""
-                for i in 100 101 128 129 130 131 132 133 254; do
-                    if ping -c 1 -W 1 "${LAN_SUBNET}.${i}" >/dev/null 2>&1; then
-                        SCAN_RESULT="${SCAN_RESULT}${LAN_SUBNET}.${i}\n"
-                    fi
+                # OPTIMIZED: Parallel background pings (10x faster than sequential!)
+                echo -e "${BLUE}Using parallel ping for scan (takes ~2 seconds)...${NC}"
+                for i in 1 100 101 128 129 130 131 132 254; do
+                    ping -c 1 -W 1 "${LAN_SUBNET}.${i}" >/dev/null 2>&1 &
                 done
+                # Wait for all background pings to complete
+                wait
             fi
 
-            # Wait for ARP table to populate
-            sleep 2
+            # Wait for ARP table to populate (reduced from 2s to 1s)
+            sleep 1
 
             # Check ARP table for discovered devices
             echo ""

@@ -456,6 +456,10 @@ class ARPMonitor:
         self.logger = logging.getLogger("ARPMonitor")
         self.known_macs = set()
 
+        # OPTIMIZATION: Compile regex patterns once (reused in parsing)
+        self._ipv4_pattern = re.compile(r'^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$')
+        self._mac_pattern = re.compile(r'^([0-9a-f]{2}:){5}([0-9a-f]{2})$')
+
     def get_arp_entries(self) -> List[tuple]:
         """
         Get all MAC addresses and their IPv4 addresses in ARP table for this interface.
@@ -2008,7 +2012,6 @@ class WANMonitor:
         This is called after setting device MAC to prevent OpenWrt services from changing it.
         """
         self.expected_mac = mac.lower()
-        self.last_mac = mac.lower()
         self.logger.info(f"WAN monitor will maintain MAC: {self.expected_mac}")
 
     def get_current_addresses(self) -> tuple:
