@@ -893,99 +893,13 @@ echo ""
 echo -e "${YELLOW}Step 9: Creating helper scripts...${NC}"
 
 # Status script (API-based, requires network)
-cat > /usr/bin/gateway-status << 'EOF'
-#!/bin/sh
-# Try multiple hosts to find working API endpoint
-for HOST in 127.0.0.1 192.168.1.1 localhost; do
-    URL="http://${HOST}:5050/status"
+# API server removed - gateway-status now points to direct version
+ln -sf /usr/bin/gateway-status-direct /usr/bin/gateway-status
+echo -e "${GREEN}✓ gateway-status symlinked to gateway-status-direct (no API server needed)${NC}"
 
-    http_get() {
-        if command -v curl >/dev/null 2>&1; then
-            curl -s --connect-timeout 2 "$1" 2>&1
-            return $?
-        fi
-
-        if command -v wget >/dev/null 2>&1; then
-            wget -qO- --timeout=2 "$1" 2>&1
-            return $?
-        fi
-
-        echo "Error: neither curl nor wget is available" >&2
-        return 1
-    }
-
-    # Get the response
-    RESPONSE=$(http_get "$URL")
-    EXIT_CODE=$?
-
-    # If successful, use this host
-    if [ $EXIT_CODE -eq 0 ] && [ -n "$RESPONSE" ]; then
-        # Try to parse as JSON
-        echo "$RESPONSE" | python3 -m json.tool 2>/dev/null
-        if [ $? -eq 0 ]; then
-            exit 0
-        fi
-    fi
-done
-
-# If we get here, all attempts failed
-echo "Error: Failed to connect to API server"
-echo ""
-echo "Troubleshooting:"
-echo "  1. Check if service is running: ps | grep ipv4_ipv6_gateway"
-echo "  2. Check logs: tail -f /var/log/ipv4-ipv6-gateway.log"
-echo "  3. Check port: netstat -tlnp | grep 5050"
-echo "  4. Try manually: curl http://192.168.1.1:5050/status"
-exit 1
-EOF
-chmod +x /usr/bin/gateway-status
-
-# Devices script
-cat > /usr/bin/gateway-devices << 'EOF'
-#!/bin/sh
-STATUS="${1:-all}"
-
-# Try multiple hosts to find working API endpoint
-for HOST in 127.0.0.1 192.168.1.1 localhost; do
-    URL="http://${HOST}:5050/devices?status=${STATUS}"
-
-    http_get() {
-        if command -v curl >/dev/null 2>&1; then
-            curl -s --connect-timeout 2 "$1" 2>&1
-            return $?
-        fi
-
-        if command -v wget >/dev/null 2>&1; then
-            wget -qO- --timeout=2 "$1" 2>&1
-            return $?
-        fi
-
-        echo "Error: neither curl nor wget is available" >&2
-        return 1
-    }
-
-    # Get the response
-    RESPONSE=$(http_get "$URL")
-    EXIT_CODE=$?
-
-    # If successful, use this host
-    if [ $EXIT_CODE -eq 0 ] && [ -n "$RESPONSE" ]; then
-        # Try to parse as JSON
-        echo "$RESPONSE" | python3 -m json.tool 2>/dev/null
-        if [ $? -eq 0 ]; then
-            exit 0
-        fi
-    fi
-done
-
-# If we get here, all attempts failed
-echo "Error: Failed to connect to API server"
-echo "Tried: 127.0.0.1, 192.168.1.1, localhost"
-echo ""
-echo "Try manually: curl http://192.168.1.1:5050/devices"
-exit 1
-EOF
-chmod +x /usr/bin/gateway-devices
+# API server removed - gateway-devices now points to direct version
+ln -sf /usr/bin/gateway-devices-direct /usr/bin/gateway-devices
+echo -e "${GREEN}✓ gateway-devices symlinked to gateway-devices-direct (no API server needed)${NC}"
 
 echo -e "${GREEN}✓ Helper scripts created${NC}\n"
 
