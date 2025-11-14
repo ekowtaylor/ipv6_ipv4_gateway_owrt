@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import gateway_config as cfg
-from gateway_api_server import GatewayAPIServer
 from haproxy_manager import HAProxyManager
+
+# API server completely removed - use gateway-status-direct and gateway-devices-direct instead
 
 # Validate config and ensure directories/commands exist BEFORE logging setup
 cfg.validate_config()
@@ -2364,27 +2365,6 @@ class GatewayService:
         )
         return 80
 
-        self.eth0 = NetworkInterface(cfg.ETH0_INTERFACE)
-        self.eth1 = NetworkInterface(cfg.ETH1_INTERFACE)
-
-        # WAN network monitor (for automatic rediscovery on network changes)
-        self.wan_monitor = (
-            WANMonitor(interface=cfg.ETH0_INTERFACE) if cfg.ENABLE_WAN_MONITOR else None
-        )
-
-        self.api_server: Optional[GatewayAPIServer] = None
-
-        self.devices: Dict[str, DeviceMapping] = {}
-        self._devices_lock = threading.Lock()
-        self.running = False
-        self.discovery_thread: Optional[threading.Thread] = None
-        self.monitor_thread: Optional[threading.Thread] = None
-        self.wan_monitor_thread: Optional[threading.Thread] = None
-
-        # Track whether WAN has been initialized (brought up with device MAC)
-        self.wan_initialized = False
-        self.wan_init_lock = threading.Lock()
-
     def _save_original_wan_mac(self, mac: str) -> bool:
         """
         Save the original WAN interface MAC address to file.
@@ -2666,16 +2646,18 @@ class GatewayService:
             self.wan_monitor_thread.start()
             self.logger.info("WAN network monitoring started")
 
-        if cfg.API_ENABLED:
-            self.api_server = GatewayAPIServer(
-                gateway_service=self,
-                host=cfg.API_HOST,
-                port=cfg.API_PORT,
-            )
-            try:
-                self.api_server.start()
-            except Exception as e:
-                self.logger.error("Failed to start API server: %s", e)
+        # API server removed - use gateway-status-direct and gateway-devices-direct instead
+        # Old API server code commented out below:
+        # if cfg.API_ENABLED:
+        #     self.api_server = GatewayAPIServer(
+        #         gateway_service=self,
+        #         host=cfg.API_HOST,
+        #         port=cfg.API_PORT,
+        #     )
+        #     try:
+        #         self.api_server.start()
+        #     except Exception as e:
+        #         self.logger.error("Failed to start API server: %s", e)
 
         self.logger.info("Gateway service started")
 
