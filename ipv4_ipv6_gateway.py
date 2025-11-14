@@ -1498,19 +1498,60 @@ class FirewallManager:
         self.logger = logging.getLogger("FirewallManager")
 
     def enable_forwarding(self) -> bool:
-        """Enable IPv4 and IPv6 forwarding"""
+        """
+        Enable IPv4 and IPv6 forwarding.
+
+        CRITICAL IPv6 FIX: When forwarding is enabled, the kernel automatically
+        disables Router Advertisement acceptance (accept_ra=0). This breaks SLAAC!
+
+        We MUST set accept_ra=2 to accept RAs even with forwarding enabled.
+        This allows the gateway to be BOTH a router AND a SLAAC client.
+        """
         try:
+            # Enable IPv4 forwarding
             subprocess.run(
                 [cfg.CMD_SYSCTL, "-w", "net.ipv4.ip_forward=1"],
                 check=True,
                 capture_output=True,
             )
+
+            # Enable IPv6 forwarding
             subprocess.run(
                 [cfg.CMD_SYSCTL, "-w", "net.ipv6.conf.all.forwarding=1"],
                 check=True,
                 capture_output=True,
             )
+
+            # CRITICAL FIX: Accept Router Advertisements even with forwarding enabled!
+            # Without this, eth0 will NOT get IPv6 from router via SLAAC!
+            # accept_ra=2 means: "accept RA even when forwarding is enabled"
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", "net.ipv6.conf.eth0.accept_ra=2"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", "net.ipv6.conf.all.accept_ra=2"],
+                check=True,
+                capture_output=True,
+            )
+
+            # Enable IPv6 autoconfiguration (SLAAC)
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", "net.ipv6.conf.eth0.autoconf=1"],
+                check=True,
+                capture_output=True,
+            )
+
+            # Ensure IPv6 is not disabled
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", "net.ipv6.conf.eth0.disable_ipv6=0"],
+                check=True,
+                capture_output=True,
+            )
+
             self.logger.info("IP forwarding enabled for IPv4 and IPv6")
+            self.logger.info("IPv6 Router Advertisement acceptance enabled (accept_ra=2)")
             return True
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to enable forwarding: {e}")
