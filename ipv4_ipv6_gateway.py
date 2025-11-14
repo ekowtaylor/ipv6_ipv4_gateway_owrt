@@ -2226,6 +2226,9 @@ class GatewayService:
         self.device_store = DeviceStore(config_dir)
         self.firewall = FirewallManager()
 
+        # Store detected HTTP ports for each device (MAC -> port)
+        self.device_http_ports: Dict[str, int] = {}
+
         # Initialize proxy manager based on selected backend
         self.proxy_manager = None
         if cfg.ENABLE_IPV6_TO_IPV4_PROXY:
@@ -2237,6 +2240,66 @@ class GatewayService:
                 self.logger.info("Using socat for IPv6→IPv4 proxying")
             else:
                 self.logger.error(f"Unknown proxy backend: {cfg.IPV6_PROXY_BACKEND}")
+
+    def _detect_device_http_port(self, device_ipv4: str) -> Optional[int]:
+        """
+        Auto-detect which port the device's HTTP service is running on.
+
+        CRITICAL: Devices may run HTTP on different ports:
+        - Port 80 (standard HTTP)
+        - Port 5000 (Flask/development servers)
+        - Port 8080 (alternative HTTP)
+        - Port 8000 (Python SimpleHTTPServer)
+
+        We scan common ports and test for HTTP responses to find the correct one.
+
+        Args:
+            device_ipv4: Device's LAN IPv4 address (e.g., "192.168.1.129")
+
+        Returns:
+            Port number if HTTP service found, None otherwise
+        """
+        common_http_ports = [80, 5000, 8080, 8000, 8888, 3000]
+
+        self.logger.info(f"🔍 Auto-detecting HTTP port for device {device_ipv4}...")
+
+        for port in common_http_ports:
+            try:
+                # Try to connect and send HTTP request
+                import socket
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)  # 2 second timeout
+
+                # Try to connect
+                result = sock.connect_ex((device_ipv4, port))
+
+                if result == 0:
+                    # Port is open! Test if it's HTTP
+                    try:
+                        sock.send(b"HEAD / HTTP/1.0\r\n\r\n")
+                        response = sock.recv(1024)
+
+                        # Check if response looks like HTTP
+                        if b"HTTP" in response:
+                            sock.close()
+                            self.logger.info(
+                                f"✓ Found HTTP service on {device_ipv4}:{port}"
+                            )
+                            return port
+                    except:
+                        pass  # Not HTTP, try next port
+
+                sock.close()
+
+            except Exception as e:
+                self.logger.debug(f"Port {port} check failed: {e}")
+                continue
+
+        # No HTTP port found - default to 80
+        self.logger.warning(
+            f"⚠️ Could not detect HTTP port for {device_ipv4}, defaulting to port 80"
+        )
+        return 80
 
         self.eth0 = NetworkInterface(cfg.ETH0_INTERFACE)
         self.eth1 = NetworkInterface(cfg.ETH1_INTERFACE)
@@ -3094,13 +3157,32 @@ class GatewayService:
                             and device.ipv4_address
                             and device.ipv6_address
                         ):
-                            # Start proxies with FIREWALL-ALLOWED ports only (telnet 23, HTTP 80)
+                            # CRITICAL: Auto-detect device's actual HTTP port!
+                            # Devices may run HTTP on port 80, 5000, 8080, 8000, etc.
+                            detected_http_port = self._detect_device_http_port(device.ipv4_address)
+
+                            # Store detected port for this device
+                            self.device_http_ports[mac] = detected_http_port
+
+                            # Create dynamic port map based on detected HTTP port
+                            # Always forward telnet (23), but use detected port for HTTP
+                            dynamic_port_map = {
+                                2323: 23,  # Telnet (fixed)
+                                8080: detected_http_port,  # HTTP (auto-detected!)
+                            }
+
+                            self.logger.info(
+                                f"Using dynamic port map for {mac}: "
+                                f"Telnet 2323→23, HTTP 8080→{detected_http_port}"
+                            )
+
+                            # Start proxies with DYNAMIC PORT MAP!
                             # Pass device's IPv6 address so proxy binds to it specifically
                             self.proxy_manager.start_proxy_for_device(
                                 mac=mac,
                                 device_ipv4=device.ipv4_address,
                                 device_ipv6=device.ipv6_address,  # Device's unique IPv6 address
-                                port_map=cfg.IPV6_PROXY_PORT_FORWARDS,  # Only telnet & HTTP!
+                                port_map=dynamic_port_map,  # DYNAMIC ports!
                             )
                 else:
                     device.status = "failed"
