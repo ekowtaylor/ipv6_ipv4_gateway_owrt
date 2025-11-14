@@ -1329,22 +1329,82 @@ class DeviceStore:
         self._lock = threading.Lock()
 
     def load_devices(self) -> Dict[str, DeviceMapping]:
-        """Load all device mappings from disk"""
-        with self._lock:
-            if not self.devices_file.exists():
-                self.logger.info("No existing devices file, starting fresh")
+        """
+        Load all device mappings from disk with robust error handling.
+
+        Handles:
+        - Corrupted JSON files (automatic backup and recovery)
+        - Missing files (creates new)
+        - Permission errors
+        - Lock timeouts
+
+        Returns empty dict on any error to allow gateway to start fresh.
+        """
+        try:
+            # CRITICAL: Use timeout on lock to prevent deadlock
+            if not self._lock.acquire(timeout=5):
+                self.logger.error("Failed to acquire device store lock after 5s - starting fresh")
                 return {}
 
             try:
-                with open(self.devices_file, "r") as f:
-                    data = json.load(f)
-                    return {
-                        mac: DeviceMapping.from_dict(device)
-                        for mac, device in data.items()
-                    }
-            except Exception as e:
-                self.logger.error(f"Failed to load devices: {e}")
-                return {}
+                if not self.devices_file.exists():
+                    self.logger.info("No existing devices file, starting fresh")
+                    return {}
+
+                self.logger.info(f"Loading device mappings from {self.devices_file}...")
+
+                try:
+                    with open(self.devices_file, "r") as f:
+                        data = json.load(f)
+
+                    # Validate it's a dict
+                    if not isinstance(data, dict):
+                        raise ValueError(f"Expected dict, got {type(data)}")
+
+                    # Convert to DeviceMapping objects
+                    devices = {}
+                    for mac, device_data in data.items():
+                        try:
+                            devices[mac] = DeviceMapping.from_dict(device_data)
+                        except Exception as e:
+                            self.logger.warning(f"Skipping invalid device {mac}: {e}")
+                            continue
+
+                    self.logger.info(f"Successfully loaded {len(devices)} device mappings")
+                    return devices
+
+                except json.JSONDecodeError as e:
+                    # Corrupted JSON! Backup and start fresh
+                    self.logger.error(f"⚠️ CORRUPTED device file: {e}")
+                    backup_path = self.devices_file.with_suffix(".json.corrupted")
+
+                    try:
+                        # Backup the corrupted file for debugging
+                        import shutil
+                        shutil.copy(self.devices_file, backup_path)
+                        self.logger.warning(f"Backed up corrupted file to {backup_path}")
+                    except Exception as backup_error:
+                        self.logger.warning(f"Could not backup corrupted file: {backup_error}")
+
+                    # Start fresh
+                    self.logger.info("Starting with fresh device store due to corruption")
+                    return {}
+
+                except PermissionError as e:
+                    self.logger.error(f"Permission denied reading {self.devices_file}: {e}")
+                    return {}
+
+                except Exception as e:
+                    self.logger.error(f"Unexpected error loading devices: {e}")
+                    return {}
+
+            finally:
+                # CRITICAL: Always release lock!
+                self._lock.release()
+
+        except Exception as e:
+            self.logger.error(f"Critical error in load_devices: {e}")
+            return {}
 
     def save_devices(self, devices: Dict[str, DeviceMapping]) -> bool:
         """Save device mappings to disk (atomic write)"""

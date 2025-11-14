@@ -268,6 +268,7 @@ else
     echo "  - haproxy (for IPv6→IPv4 proxying - production-grade)"
     echo "  - net-tools (optional, provides 'arp')"
     echo "  - 464xlat (for IPv4/IPv6 translation)"
+  echo ""
 fi
 echo ""
 
@@ -283,6 +284,142 @@ if command -v curl >/dev/null 2>&1; then
 else
     echo -e "${YELLOW}curl not found; gateway helpers will use wget if available.${NC}"
 fi
+echo ""
+
+# Step 1.5: Scan LAN for connected devices
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}PRE-INSTALL NETWORK SCAN${NC}"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${YELLOW}Scanning LAN (eth1) for connected devices...${NC}"
+echo -e "${BLUE}This helps validate your network setup before installation.${NC}"
+echo ""
+
+LAN_INTERFACE="eth1"
+LAN_DEVICES_FOUND=0
+
+# Check if eth1 exists and is up
+if command -v ip >/dev/null 2>&1; then
+    if ip link show "$LAN_INTERFACE" >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ LAN interface $LAN_INTERFACE found${NC}"
+
+        # Check if interface is up
+        if ip link show "$LAN_INTERFACE" | grep -q "state UP"; then
+            echo -e "${GREEN}✓ LAN interface is UP${NC}"
+        else
+            echo -e "${YELLOW}⚠ LAN interface is DOWN - bringing it up...${NC}"
+            ip link set "$LAN_INTERFACE" up 2>/dev/null || echo -e "${YELLOW}  Could not bring up interface (may need manual configuration)${NC}"
+            sleep 2
+        fi
+
+        # Get LAN IP address
+        LAN_IP=$(ip -4 addr show "$LAN_INTERFACE" 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
+        if [ -n "$LAN_IP" ]; then
+            echo -e "${GREEN}✓ LAN IPv4: $LAN_IP${NC}"
+
+            # Extract subnet
+            LAN_SUBNET=$(echo "$LAN_IP" | cut -d'.' -f1-3)
+
+            # Quick ping scan of likely device IPs
+            echo -e "${BLUE}Scanning for devices on ${LAN_SUBNET}.0/24...${NC}"
+
+            # Try fping first (fast parallel ping)
+            if command -v fping >/dev/null 2>&1; then
+                echo -e "${BLUE}Using fping for fast scan...${NC}"
+                SCAN_RESULT=$(fping -a -g "${LAN_SUBNET}.100" "${LAN_SUBNET}.150" 2>/dev/null)
+            else
+                # Fallback to regular ping (slower)
+                echo -e "${BLUE}Using ping for scan (this may take 10-20 seconds)...${NC}"
+                SCAN_RESULT=""
+                for i in 100 101 128 129 130 131 132 133 254; do
+                    if ping -c 1 -W 1 "${LAN_SUBNET}.${i}" >/dev/null 2>&1; then
+                        SCAN_RESULT="${SCAN_RESULT}${LAN_SUBNET}.${i}\n"
+                    fi
+                done
+            fi
+
+            # Wait for ARP table to populate
+            sleep 2
+
+            # Check ARP table for discovered devices
+            echo ""
+            echo -e "${YELLOW}=== DEVICES FOUND ON LAN ===${NC}"
+
+            if command -v ip >/dev/null 2>&1; then
+                # Use 'ip neigh' (modern approach)
+                ARP_ENTRIES=$(ip neigh show dev "$LAN_INTERFACE" 2>/dev/null | grep -v "FAILED")
+
+                if [ -n "$ARP_ENTRIES" ]; then
+                    LAN_DEVICES_FOUND=$(echo "$ARP_ENTRIES" | wc -l)
+                    echo -e "${GREEN}Found $LAN_DEVICES_FOUND device(s) on $LAN_INTERFACE:${NC}"
+                    echo ""
+                    echo "$ARP_ENTRIES" | while read -r line; do
+                        DEVICE_IP=$(echo "$line" | awk '{print $1}')
+                        DEVICE_MAC=$(echo "$line" | grep -oP 'lladdr \K[0-9a-f:]+')
+                        DEVICE_STATE=$(echo "$line" | awk '{print $NF}')
+
+                        if [ -n "$DEVICE_MAC" ]; then
+                            echo -e "  ${BLUE}•${NC} IP: ${GREEN}$DEVICE_IP${NC}  MAC: ${YELLOW}$DEVICE_MAC${NC}  State: $DEVICE_STATE"
+                        fi
+                    done
+                    echo ""
+                else
+                    echo -e "${YELLOW}⚠ No devices found in ARP table${NC}"
+                    LAN_DEVICES_FOUND=0
+                fi
+            elif command -v arp >/dev/null 2>&1; then
+                # Fallback to legacy 'arp' command
+                ARP_ENTRIES=$(arp -i "$LAN_INTERFACE" -n 2>/dev/null | grep -v "incomplete")
+
+                if [ -n "$ARP_ENTRIES" ]; then
+                    LAN_DEVICES_FOUND=$(echo "$ARP_ENTRIES" | wc -l)
+                    echo -e "${GREEN}Found $LAN_DEVICES_FOUND device(s) on $LAN_INTERFACE:${NC}"
+                    echo ""
+                    echo "$ARP_ENTRIES" | tail -n +2 | while read -r line; do
+                        DEVICE_IP=$(echo "$line" | awk '{print $1}')
+                        DEVICE_MAC=$(echo "$line" | awk '{print $3}')
+
+                        echo -e "  ${BLUE}•${NC} IP: ${GREEN}$DEVICE_IP${NC}  MAC: ${YELLOW}$DEVICE_MAC${NC}"
+                    done
+                    echo ""
+                else
+                    echo -e "${YELLOW}⚠ No devices found in ARP table${NC}"
+                    LAN_DEVICES_FOUND=0
+                fi
+            else
+                echo -e "${YELLOW}⚠ Neither 'ip' nor 'arp' command available - cannot check ARP table${NC}"
+            fi
+
+        else
+            echo -e "${YELLOW}⚠ No IPv4 address configured on $LAN_INTERFACE${NC}"
+            echo -e "${BLUE}  The installer will configure it as 192.168.1.1/24${NC}"
+        fi
+
+    else
+        echo -e "${YELLOW}⚠ LAN interface $LAN_INTERFACE not found${NC}"
+        echo -e "${BLUE}  Available interfaces:${NC}"
+        ip link show | grep -E '^[0-9]+:' | awk -F': ' '{print "    " $2}' | head -5
+    fi
+else
+    echo -e "${YELLOW}⚠ 'ip' command not available - skipping LAN scan${NC}"
+fi
+
+echo ""
+echo -e "${YELLOW}=== SCAN SUMMARY ===${NC}"
+if [ $LAN_DEVICES_FOUND -gt 0 ]; then
+    echo -e "${GREEN}✓ Found $LAN_DEVICES_FOUND device(s) on LAN${NC}"
+    echo -e "${GREEN}✓ Network setup looks good!${NC}"
+    echo -e "${BLUE}  The gateway will discover and configure these devices automatically.${NC}"
+else
+    echo -e "${YELLOW}⚠ No devices detected on LAN${NC}"
+    echo -e "${YELLOW}  This could mean:${NC}"
+    echo -e "${YELLOW}  1. No device is connected to eth1${NC}"
+    echo -e "${YELLOW}  2. Device is connected but hasn't sent any packets yet${NC}"
+    echo -e "${YELLOW}  3. LAN interface needs configuration (installer will handle this)${NC}"
+    echo ""
+    echo -e "${BLUE}  After installation, connect your device and the gateway will detect it automatically.${NC}"
+fi
+echo ""
+echo -e "${GREEN}========================================${NC}"
 echo ""
 
 # Step 2: Create directories
