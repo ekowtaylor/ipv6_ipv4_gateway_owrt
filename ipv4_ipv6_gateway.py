@@ -3413,13 +3413,20 @@ class GatewayService:
 
         CRITICAL: Also syncs IPv6 addresses with router's neighbor table!
         This prevents gateway/router IPv6 mismatches when router renews/changes addresses.
+
+        NEW: Also monitors device HTTP port health!
+        Detects when services go down/up or switch ports, and automatically fixes proxies.
         """
-        self.logger.info("Monitoring loop started (with IPv6 neighbor table sync)")
+        self.logger.info("Monitoring loop started (with IPv6 sync + port health checks)")
         timeout_delta = timedelta(seconds=cfg.DEVICE_STATUS_TIMEOUT)
 
         # Track last IPv6 sync time (sync every 60 seconds)
         last_ipv6_sync = 0
         ipv6_sync_interval = 60  # seconds
+
+        # Track last port health check (check every 30 seconds)
+        last_port_health_check = 0
+        port_health_check_interval = 30  # seconds
 
         while self.running:
             try:
@@ -3445,12 +3452,19 @@ class GatewayService:
 
                     self.device_store.save_devices(self.devices)
 
+                current_time = time.time()
+
                 # CRITICAL: Periodic IPv6 sync with router's neighbor table
                 # Prevents gateway/router IPv6 mismatches (router renews/changes IPv6)
-                current_time = time.time()
                 if current_time - last_ipv6_sync >= ipv6_sync_interval:
                     self._sync_ipv6_with_router()
                     last_ipv6_sync = current_time
+
+                # NEW: Periodic port health check
+                # Detects when device services go down/up or switch ports
+                if current_time - last_port_health_check >= port_health_check_interval:
+                    self._check_device_port_health()
+                    last_port_health_check = current_time
 
                 time.sleep(cfg.DEVICE_MONITOR_INTERVAL)
 
@@ -3595,6 +3609,131 @@ class GatewayService:
                     self.logger.debug(
                         f"✓ IPv6 in sync for {mac}: {device.ipv6_address}"
                     )
+
+    def _check_device_port_health(self) -> None:
+        """
+        Periodically check device HTTP port health.
+
+        CRITICAL: Detects when device services go down/up or switch ports!
+
+        Problem: Device services can change/fail without gateway knowing:
+        - HTTP service crashes → proxy forwarding to dead port
+        - Device reboots → HTTP not ready yet on old port
+        - Device switches ports (80 → 5000) → proxy forwarding to wrong port
+        - Port responds but service is down
+
+        Solution: Periodically test if detected HTTP port is still responding
+        If port down → log warning, optionally mark device as service_down
+        If port switched → detect new port, update mapping, restart proxies
+
+        This ensures proxies always forward to the ACTUAL working port!
+        """
+        self.logger.debug("Checking device HTTP port health...")
+
+        with self._devices_lock:
+            for mac, device in list(self.devices.items()):
+                # Skip if device has no IPv4 (can't check ports)
+                if not device.ipv4_address:
+                    continue
+
+                # Skip if device is not active
+                if device.status != "active":
+                    continue
+
+                # Get previously detected HTTP port for this device
+                if mac not in self.device_http_ports:
+                    # No port detected yet, try to detect now
+                    self.logger.debug(f"No HTTP port detected for {mac}, detecting now...")
+                    detected_port = self._detect_device_http_port(device.ipv4_address)
+                    if detected_port:
+                        self.device_http_ports[mac] = detected_port
+                        self.logger.info(f"Detected HTTP port {detected_port} for {mac}")
+                    continue
+
+                current_port = self.device_http_ports[mac]
+
+                # Test if current port is still responding
+                import socket
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(2)
+                    result = sock.connect_ex((device.ipv4_address, current_port))
+                    sock.close()
+
+                    if result == 0:
+                        # Port still responding - all good!
+                        self.logger.debug(
+                            f"✓ HTTP port {current_port} healthy for {mac} ({device.ipv4_address})"
+                        )
+                        continue
+                    else:
+                        # Port not responding! Check if it switched to different port
+                        self.logger.warning(
+                            f"⚠️ HTTP port {current_port} NOT responding for {mac} ({device.ipv4_address})"
+                        )
+                        self.logger.warning(f"   Checking if service switched ports...")
+
+                        # Try to detect if HTTP moved to different port
+                        new_port = self._detect_device_http_port(device.ipv4_address)
+
+                        if new_port and new_port != current_port:
+                            # Service switched ports!
+                            self.logger.warning(
+                                f"🔄 HTTP service SWITCHED PORTS for {mac}!"
+                            )
+                            self.logger.warning(
+                                f"   Old port: {current_port} → New port: {new_port}"
+                            )
+
+                            # Update port mapping
+                            self.device_http_ports[mac] = new_port
+
+                            # Restart proxies with new port mapping
+                            if self.proxy_manager and device.ipv6_address:
+                                self.logger.info(
+                                    f"Restarting proxies with new HTTP port {new_port}..."
+                                )
+
+                                # Stop old proxies
+                                self.proxy_manager.stop_proxies_for_device(mac)
+
+                                # Wait for cleanup
+                                time.sleep(1)
+
+                                # Create new dynamic port map
+                                dynamic_port_map = {
+                                    2323: 23,  # Telnet (fixed)
+                                    8080: new_port,  # HTTP (updated!)
+                                }
+
+                                # Start new proxies with updated port
+                                self.proxy_manager.start_proxy_for_device(
+                                    mac=mac,
+                                    device_ipv4=device.ipv4_address,
+                                    device_ipv6=device.ipv6_address,
+                                    port_map=dynamic_port_map,
+                                )
+
+                                self.logger.info(
+                                    f"✓ Proxies restarted: HTTP 8080 → {new_port}"
+                                )
+                        elif new_port == current_port:
+                            # Port came back up (temporary issue)
+                            self.logger.info(
+                                f"✓ HTTP port {current_port} is now responding again for {mac}"
+                            )
+                        else:
+                            # Service completely down
+                            self.logger.error(
+                                f"❌ HTTP service DOWN for {mac} ({device.ipv4_address}) - "
+                                f"no HTTP port responding!"
+                            )
+                            # Don't change device status - might be temporary
+                            # User can check logs to see service is down
+
+                except Exception as e:
+                    self.logger.debug(f"Port health check error for {mac}: {e}")
+                    continue
 
     def _rediscover_all_devices(self) -> None:
         """
