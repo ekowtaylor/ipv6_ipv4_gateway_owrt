@@ -1796,32 +1796,61 @@ class SocatProxyManager:
         """
         Start socat proxies for all ports for a device.
 
+        CRITICAL: Handles MULTIPLE IPv6 addresses (comma-separated)!
+        A device can have both SLAAC and DHCPv6 addresses, and we must bind to ALL of them
+        so clients can connect using any IPv6 address the router knows about.
+
         Args:
             mac: Device MAC address
             device_ipv4: Device's LAN IPv4 address (e.g., "192.168.1.128")
-            device_ipv6: Device's WAN IPv6 address (e.g., "2620:10d:c050:100:46b7:d0ff:fea6:6dfc")
+            device_ipv6: Device's WAN IPv6 address(es) - can be comma-separated!
+                        e.g., "2620:10d:c050:100::85c,2620:10d:c050:100:46b7:d0ff:fea6:6afd"
             port_map: Port mapping {gateway_port: device_port}
 
         Returns:
             True if all proxies started successfully
         """
+        # Split comma-separated IPv6 addresses
+        ipv6_addresses = [addr.strip() for addr in device_ipv6.split(",") if addr.strip()]
+
+        if len(ipv6_addresses) == 0:
+            self.logger.error(f"No valid IPv6 addresses for {mac}")
+            return False
+
+        if len(ipv6_addresses) > 1:
+            self.logger.info(
+                f"Device {mac} has {len(ipv6_addresses)} IPv6 addresses - "
+                f"will bind proxies to ALL for maximum compatibility"
+            )
+
         self.logger.info(
-            f"Starting IPv6→IPv4 proxies for device {device_ipv4} (IPv6: {device_ipv6}, MAC: {mac})"
+            f"Starting IPv6→IPv4 proxies for device {device_ipv4} (MAC: {mac})"
         )
+
+        for i, ipv6 in enumerate(ipv6_addresses, 1):
+            self.logger.info(f"  IPv6 #{i}: {ipv6}")
 
         with self._lock:
             if mac not in self.proxies:
                 self.proxies[mac] = {}
 
             success_count = 0
-            for gateway_port, device_port in port_map.items():
-                if self._start_single_proxy(
-                    mac, device_ipv4, device_ipv6, gateway_port, device_port
-                ):
-                    success_count += 1
+            total_proxies = len(port_map) * len(ipv6_addresses)
+
+            # Start proxies for EACH IPv6 address and EACH port
+            for ipv6 in ipv6_addresses:
+                for gateway_port, device_port in port_map.items():
+                    # Create unique port key that includes IPv6 index
+                    # This allows multiple proxies on same port (different IPv6s)
+                    proxy_key = f"{gateway_port}_{ipv6}"
+
+                    if self._start_single_proxy(
+                        mac, device_ipv4, ipv6, gateway_port, device_port, proxy_key
+                    ):
+                        success_count += 1
 
             self.logger.info(
-                f"Started {success_count}/{len(port_map)} IPv6→IPv4 proxies for {mac}"
+                f"Started {success_count}/{total_proxies} IPv6→IPv4 proxies for {mac}"
             )
             return success_count > 0
 
@@ -1832,20 +1861,30 @@ class SocatProxyManager:
         device_ipv6: str,
         gateway_port: int,
         device_port: int,
+        proxy_key: str = None,
     ) -> bool:
-        """Start a single socat proxy for one port"""
+        """
+        Start a single socat proxy for one port and one IPv6 address.
+
+        Args:
+            proxy_key: Unique identifier for this proxy (allows multiple proxies on same port for different IPv6s)
+        """
+        # Use proxy_key if provided, otherwise default to just the port number
+        if proxy_key is None:
+            proxy_key = str(gateway_port)
+
         try:
-            # Check if proxy already running for this port
-            if gateway_port in self.proxies.get(mac, {}):
-                existing_process = self.proxies[mac][gateway_port]
+            # Check if proxy already running for this key
+            if proxy_key in self.proxies.get(mac, {}):
+                existing_process = self.proxies[mac][proxy_key]
                 if existing_process.poll() is None:  # Still running
                     self.logger.debug(
-                        f"Proxy already running for {mac} port {gateway_port}"
+                        f"Proxy already running for {mac} key {proxy_key}"
                     )
                     return True
                 else:
                     # Process died, remove it
-                    del self.proxies[mac][gateway_port]
+                    del self.proxies[mac][proxy_key]
 
             # Determine if this port needs special protocol handling
             # Telnet ports: 23, 2323 (and any port that maps to 23)
@@ -1908,20 +1947,20 @@ class SocatProxyManager:
             # Store log file handle so we can close it later
             if mac not in self.log_files:
                 self.log_files[mac] = {}
-            self.log_files[mac][gateway_port] = log_file
+            self.log_files[mac][proxy_key] = log_file
 
             # Wait a moment to see if it crashes immediately
             time.sleep(0.1)
             if process.poll() is not None:
                 self.logger.error(
-                    f"Socat proxy failed to start for {mac} port {gateway_port}"
+                    f"Socat proxy failed to start for {mac} key {proxy_key}"
                 )
                 return False
 
             # Success! Store the process
             if mac not in self.proxies:
                 self.proxies[mac] = {}
-            self.proxies[mac][gateway_port] = process
+            self.proxies[mac][proxy_key] = process
 
             # Determine proxy type for logging
             if is_telnet_port:
@@ -1939,7 +1978,7 @@ class SocatProxyManager:
 
         except Exception as e:
             self.logger.error(
-                f"Failed to start socat proxy for {mac} port {gateway_port}: {e}"
+                f"Failed to start socat proxy for {mac} key {proxy_key}: {e}"
             )
             return False
 
