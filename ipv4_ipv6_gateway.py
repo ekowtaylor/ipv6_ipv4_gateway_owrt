@@ -461,6 +461,55 @@ class ARPMonitor:
         self._ipv4_pattern = re.compile(r'^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$')
         self._mac_pattern = re.compile(r'^([0-9a-f]{2}:){5}([0-9a-f]{2})$')
 
+    def active_scan(self, subnet: str = "192.168.1") -> None:
+        """
+        ACTIVE ARP SCAN: Force devices to respond by pinging common IPs.
+
+        This is CRITICAL for detecting idle devices that haven't sent any packets yet!
+
+        The passive ARP monitor only sees devices that have already communicated.
+        This active scan forces devices to respond by:
+        1. Pinging all common DHCP pool IPs (192.168.1.100-150)
+        2. Pinging common static IPs (192.168.1.1, 192.168.1.254, etc.)
+        3. Waiting for ARP responses to populate the ARP table
+
+        Args:
+            subnet: IP subnet prefix (default: 192.168.1)
+        """
+        self.logger.info(f"Running ACTIVE ARP scan on {subnet}.0/24...")
+
+        # Common IPs to scan (DHCP pool + gateway + broadcast + common static IPs)
+        common_ips = list(range(100, 151))  # DHCP pool: .100 - .150
+        common_ips.extend([1, 2, 254])  # Gateway, router, broadcast
+        common_ips.extend([10, 20, 50, 128, 129, 130, 131, 132])  # Common static IPs
+
+        # Ping all IPs in parallel (fast!)
+        processes = []
+        for ip_suffix in common_ips:
+            ip = f"{subnet}.{ip_suffix}"
+            try:
+                # Use -c 1 (one ping), -W 1 (1 second timeout), run in background
+                proc = subprocess.Popen(
+                    ["ping", "-c", "1", "-W", "1", ip],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                processes.append(proc)
+            except Exception as e:
+                self.logger.debug(f"Failed to ping {ip}: {e}")
+
+        # Wait for all pings to complete (max 2 seconds)
+        time.sleep(2)
+
+        # Terminate any remaining ping processes
+        for proc in processes:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        self.logger.info(f"Active ARP scan completed - ARP table should now be populated")
+
     def get_arp_entries(self) -> List[tuple]:
         """
         Get all MAC addresses and their IPv4 addresses in ARP table for this interface.
@@ -2284,11 +2333,34 @@ class GatewayService:
         self.logger = logging.getLogger("GatewayService")
         self.config_dir = config_dir
 
+        # Service state
+        self.running = False
+        self.devices: Dict[str, DeviceMapping] = {}
+        self._devices_lock = threading.Lock()
+
+        # WAN MAC initialization tracking
+        # CRITICAL: Prevents race conditions when multiple devices discovered simultaneously
+        self.wan_init_lock = threading.Lock()
+        self.wan_initialized = False  # Set to True after first device sets WAN MAC
+
+        # Network interfaces
+        self.eth0 = NetworkInterface(cfg.ETH0_INTERFACE)
+        self.eth1 = NetworkInterface(cfg.ETH1_INTERFACE)
+
+        # Managers
         self.arp_monitor = ARPMonitor(interface=cfg.ETH1_INTERFACE)
         self.dhcpv6_manager = DHCPv6Manager(interface=cfg.ETH0_INTERFACE)
         self.dhcpv4_manager = DHCPv4Manager(interface=cfg.ETH0_INTERFACE)
         self.device_store = DeviceStore(config_dir)
         self.firewall = FirewallManager()
+
+        # WAN monitor (for MAC protection and IP change detection)
+        if cfg.ENABLE_WAN_MONITOR:
+            self.wan_monitor = WANMonitor(interface=cfg.ETH0_INTERFACE)
+            self.logger.info("WAN monitor initialized (MAC protection + IP change detection)")
+        else:
+            self.wan_monitor = None
+            self.logger.info("WAN monitor disabled")
 
         # Store detected HTTP ports for each device (MAC -> port)
         self.device_http_ports: Dict[str, int] = {}
@@ -2304,6 +2376,14 @@ class GatewayService:
                 self.logger.info("Using socat for IPv6→IPv4 proxying")
             else:
                 self.logger.error(f"Unknown proxy backend: {cfg.IPV6_PROXY_BACKEND}")
+
+        # API server placeholder (deprecated but kept for backward compatibility)
+        self.api_server = None
+
+        # Thread references
+        self.discovery_thread = None
+        self.monitor_thread = None
+        self.wan_monitor_thread = None
 
     def _detect_device_http_port(self, device_ipv4: str) -> Optional[int]:
         """
@@ -2789,6 +2869,17 @@ class GatewayService:
         while self.running:
             try:
                 new_entries = self.arp_monitor.get_new_macs()
+
+                # CRITICAL: If no devices found, run active ARP scan to detect idle devices!
+                if not new_entries and len(self.devices) == 0:
+                    self.logger.info("📡 No devices found in ARP table - running active scan...")
+                    self.arp_monitor.active_scan()
+                    # Wait for ARP table to populate
+                    time.sleep(2)
+                    # Try again after scan
+                    new_entries = self.arp_monitor.get_new_macs()
+                    if new_entries:
+                        self.logger.info(f"✓ Active scan found {len(new_entries)} device(s)!")
 
                 for mac, ipv4 in new_entries:
                     should_spawn_thread = False
