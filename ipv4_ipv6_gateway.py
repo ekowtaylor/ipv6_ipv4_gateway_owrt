@@ -2343,6 +2343,11 @@ class GatewayService:
         self.wan_init_lock = threading.Lock()
         self.wan_initialized = False  # Set to True after first device sets WAN MAC
 
+        # Discovery state tracking
+        # CRITICAL: Prevents WAN monitor from triggering during active discovery (prevents loops!)
+        self.discovery_in_progress = False
+        self.discovery_lock = threading.Lock()
+
         # Network interfaces
         self.eth0 = NetworkInterface(cfg.ETH0_INTERFACE)
         self.eth1 = NetworkInterface(cfg.ETH1_INTERFACE)
@@ -3637,6 +3642,15 @@ class GatewayService:
                     self.wan_monitor.check_for_mac_tampering()
 
                     # Then check for IP changes (triggers rediscovery if needed)
+                    # CRITICAL: Skip if discovery already in progress (prevents loop!)
+                    with self.discovery_lock:
+                        if self.discovery_in_progress:
+                            self.logger.debug(
+                                "Skipping WAN IP change check - discovery in progress"
+                            )
+                            time.sleep(cfg.WAN_MONITOR_INTERVAL)
+                            continue
+
                     if self.wan_monitor.check_for_ip_changes():
                         # WAN IPs changed - rediscover addresses
                         self.logger.warning(
@@ -3875,63 +3889,109 @@ class GatewayService:
         """
         Clear WAN addresses for all devices and trigger re-discovery.
         Called when WAN network changes.
+
+        CRITICAL: Sets discovery_in_progress flag to prevent WAN monitor from
+        triggering again during this rediscovery (prevents infinite loop!)
         """
-        self.logger.info("Re-discovering all devices due to WAN network change")
+        # CRITICAL: Set discovery flag to prevent WAN monitor loop!
+        with self.discovery_lock:
+            if self.discovery_in_progress:
+                self.logger.warning("Rediscovery already in progress, skipping duplicate trigger")
+                return
+            self.discovery_in_progress = True
 
-        devices_to_rediscover = []
+        try:
+            self.logger.info("Re-discovering all devices due to WAN network change")
 
-        with self._devices_lock:
-            for mac, device in self.devices.items():
-                # Clear WAN addresses
-                old_ipv4 = device.ipv4_wan_address
-                old_ipv6 = device.ipv6_address
+            devices_to_rediscover = []
 
-                device.ipv4_wan_address = None
-                device.ipv6_address = None
-                device.status = "discovering"
+            with self._devices_lock:
+                for mac, device in self.devices.items():
+                    # Clear WAN addresses
+                    old_ipv4 = device.ipv4_wan_address
+                    old_ipv6 = device.ipv6_address
 
-                self.logger.info(
-                    f"Cleared WAN addresses for {mac} "
-                    f"(was IPv4: {old_ipv4}, IPv6: {old_ipv6})"
-                )
+                    device.ipv4_wan_address = None
+                    device.ipv6_address = None
+                    device.status = "discovering"
 
-                # Only rediscover if device is still in ARP table (active)
-                current_arp_entries = self.arp_monitor.get_arp_entries()
-                current_macs = {mac for mac, _ in current_arp_entries}
+                    self.logger.info(
+                        f"Cleared WAN addresses for {mac} "
+                        f"(was IPv4: {old_ipv4}, IPv6: {old_ipv6})"
+                    )
 
-                if mac in current_macs:
-                    devices_to_rediscover.append(mac)
-                else:
-                    device.status = "inactive"
-                    self.logger.info(f"Device {mac} not in ARP table, marking inactive")
+                    # Only rediscover if device is still in ARP table (active)
+                    current_arp_entries = self.arp_monitor.get_arp_entries()
+                    current_macs = {mac for mac, _ in current_arp_entries}
 
-            # Save updated device states
-            self.device_store.save_devices(self.devices)
+                    if mac in current_macs:
+                        devices_to_rediscover.append(mac)
+                    else:
+                        device.status = "inactive"
+                        self.logger.info(f"Device {mac} not in ARP table, marking inactive")
 
-        # Spawn discovery threads for active devices
-        for mac in devices_to_rediscover:
-            try:
-                thread = threading.Thread(
-                    target=self._discover_addresses_for_device,
-                    args=(mac,),
-                    daemon=True,
-                    name=f"Rediscovery-{mac}",
-                )
-                thread.start()
-                self.logger.info(
-                    f"Started re-discovery thread for {mac} (thread: {thread.name})"
-                )
-            except Exception as thread_error:
-                self.logger.error(
-                    f"Failed to start re-discovery thread for {mac}: {thread_error}"
-                )
+                # Save updated device states
+                self.device_store.save_devices(self.devices)
+
+            # Spawn discovery threads for active devices
+            for mac in devices_to_rediscover:
+                try:
+                    thread = threading.Thread(
+                        target=self._discover_addresses_for_device,
+                        args=(mac,),
+                        daemon=True,
+                        name=f"Rediscovery-{mac}",
+                    )
+                    thread.start()
+                    self.logger.info(
+                        f"Started re-discovery thread for {mac} (thread: {thread.name})"
+                    )
+                except Exception as thread_error:
+                    self.logger.error(
+                        f"Failed to start re-discovery thread for {mac}: {thread_error}"
+                    )
+                    with self._devices_lock:
+                        if mac in self.devices:
+                            self.devices[mac].status = "error"
+
+            self.logger.info(
+                f"Re-discovery initiated for {len(devices_to_rediscover)} active devices"
+            )
+
+            # Wait for discovery to complete (with timeout)
+            # Give discovery threads time to finish before allowing WAN monitor to trigger again
+            max_wait = 180  # 3 minutes max (DHCPv6 can take 60-75s)
+            wait_interval = 5  # Check every 5 seconds
+
+            self.logger.info(f"Waiting up to {max_wait}s for rediscovery to complete...")
+
+            for elapsed in range(0, max_wait, wait_interval):
+                # Check if all devices finished discovering
                 with self._devices_lock:
-                    if mac in self.devices:
-                        self.devices[mac].status = "error"
+                    discovering_count = sum(
+                        1 for d in self.devices.values() if d.status == "discovering"
+                    )
 
-        self.logger.info(
-            f"Re-discovery initiated for {len(devices_to_rediscover)} active devices"
-        )
+                if discovering_count == 0:
+                    self.logger.info(f"✓ Rediscovery completed in {elapsed}s")
+                    break
+
+                self.logger.debug(
+                    f"Waiting for {discovering_count} device(s) to finish discovering... "
+                    f"({elapsed}/{max_wait}s elapsed)"
+                )
+                time.sleep(wait_interval)
+            else:
+                # Timeout reached
+                self.logger.warning(
+                    f"Rediscovery timeout after {max_wait}s - some devices still discovering"
+                )
+
+        finally:
+            # CRITICAL: Always clear discovery flag, even on error!
+            with self.discovery_lock:
+                self.discovery_in_progress = False
+            self.logger.info("Rediscovery process complete - WAN monitor re-enabled")
 
 
 def main() -> None:
