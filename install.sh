@@ -528,6 +528,14 @@ if [ -f "setup-ipv6-port-forwarding.sh" ]; then
 else
     echo -e "${YELLOW}⚠ setup-ipv6-port-forwarding.sh not found, skipping${NC}"
 fi
+
+if [ -f "post-install-verify.sh" ]; then
+    cp post-install-verify.sh /usr/bin/gateway-verify
+    chmod +x /usr/bin/gateway-verify
+    echo -e "${GREEN}✓ Post-install verification script installed to /usr/bin/gateway-verify${NC}"
+else
+    echo -e "${YELLOW}⚠ post-install-verify.sh not found, skipping${NC}"
+fi
 echo ""
 
 # Step 4: Create systemd service file (only if systemd exists)
@@ -1245,3 +1253,51 @@ echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${BLUE}Tip: Run with --full-auto next time for zero-touch deployment!${NC}"
 echo -e "${GREEN}========================================${NC}\n"
+
+# Post-installation verification
+if [ "$AUTO_START" = true ]; then
+    echo -e "${YELLOW}========================================${NC}"
+    echo -e "${YELLOW}POST-INSTALLATION VERIFICATION${NC}"
+    echo -e "${YELLOW}========================================${NC}"
+    echo -e "${BLUE}Running comprehensive verification to ensure everything is working...${NC}"
+    echo ""
+
+    if command -v gateway-verify >/dev/null 2>&1; then
+        echo -e "${BLUE}Starting verification (this may take up to 2 minutes)...${NC}"
+        echo ""
+        gateway-verify || {
+            echo ""
+            echo -e "${YELLOW}========================================${NC}"
+            echo -e "${YELLOW}VERIFICATION COMPLETED WITH ISSUES${NC}"
+            echo -e "${YELLOW}========================================${NC}"
+            echo ""
+            echo -e "${YELLOW}The verification found some issues that need attention.${NC}"
+            echo -e "${YELLOW}Please review the output above and apply the recommended fixes.${NC}"
+            echo ""
+            echo -e "${BLUE}You can re-run verification anytime with:${NC}"
+            echo "  gateway-verify"
+            echo ""
+        }
+    else
+        echo -e "${YELLOW}⚠ gateway-verify not found (post-install-verify.sh not installed)${NC}"
+        echo -e "${BLUE}  You can manually verify the installation:${NC}"
+        echo "    1. Check service status: gateway-status"
+        echo "    2. Check for devices: gateway-devices"
+        echo "    3. Check logs: tail -f /var/log/ipv4-ipv6-gateway.log"
+    fi
+    echo ""
+else
+    echo -e "${YELLOW}========================================${NC}"
+    echo -e "${YELLOW}POST-INSTALLATION VERIFICATION${NC}"
+    echo -e "${YELLOW}========================================${NC}"
+    echo -e "${BLUE}To verify your installation after starting the service, run:${NC}"
+    echo "  gateway-verify"
+    echo ""
+    echo -e "${BLUE}This will check:${NC}"
+    echo "  • Service is running"
+    echo "  • Devices are discovered"
+    echo "  • Port forwarding is active"
+    echo "  • IPv6 proxies are running"
+    echo "  • Actual connectivity works"
+    echo ""
+fi
