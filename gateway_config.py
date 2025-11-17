@@ -91,53 +91,119 @@ DEVICE_STATUS_TIMEOUT = 300  # Mark device inactive after 5 minutes
 MAX_CONCURRENT_DHCPV6_REQUESTS = 5
 MAX_DEVICES = 1  # SINGLE DEVICE MODE: Only one device supported at a time
 
-# Automatic Port Forwarding
+# Automatic Port Forwarding (IPv4 WAN Access)
 # When a device is discovered, automatically forward these ports
 # Format: {gateway_port: device_port}
 #
-# IMPORTANT: Gateway ports are remapped to avoid conflicts with OpenWrt services!
+# CRITICAL: Gateway ports are remapped to avoid conflicts with OpenWrt services!
 # The OpenWrt gateway itself runs services on standard ports (80, 22, 443, etc.)
 # so we map device ports to non-conflicting external ports.
 #
-# Example: Device's HTTP (port 80) is accessible via gateway's port 8080
+# MAC SPOOFING REQUIREMENT:
+# The IPv4 device connected on the LAN needs its MAC pre-registered on the IPv6 network.
+# The gateway spoofs the device's MAC address on the WAN interface (eth0) to:
+#   1. Request DHCPv6 lease for the device
+#   2. Register the device's MAC on the IPv6 network
+#   3. Enable IPv6 connectivity for the IPv4-only device
+# This is essential because the network is mostly IPv6-only with limited IPv4.
+#
+# ARCHITECTURE CONSIDERATION - OpenWrt's Own Services:
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ HOW TO ACCESS SERVICES                                                   │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │ OpenWrt Gateway Services (LuCI, SSH):                                   │
+# │   - LAN Access:  http://192.168.1.1:80     (LuCI)                       │
+# │                  ssh root@192.168.1.1      (SSH on port 22)             │
+# │   - WAN Access:  NOT EXPOSED (security - LuCI/SSH only on LAN)          │
+# │                                                                          │
+# │ Device Services (via IPv4 port forwarding):                             │
+# │   - WAN IPv4:    http://gateway_wan_ip:8080    → Device:80              │
+# │                  telnet gateway_wan_ip 2323     → Device:23             │
+# │                                                                          │
+# │ Device Services (via IPv6 proxy):                                       │
+# │   - WAN IPv6:    http://[device_ipv6]:8080     → Device:80              │
+# │                  telnet device_ipv6 2323        → Device:23             │
+# │                                                                          │
+# │ KEY POINT: IPv6 proxy binds to DEVICE'S IPv6, not gateway's IPv6!       │
+# │ This means:                                                              │
+# │   ✅ Device accessible via its unique IPv6 (2620:...:6dfc)              │
+# │   ✅ OpenWrt LuCI/SSH remain on LAN only (192.168.1.1)                  │
+# │   ✅ No port conflicts - different IP addresses!                        │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# PORT CONFIGURATION:
+# - HTTP:   Port 8080 (maps to device port 80 or 5000)
+# - Telnet: Port 2323 (maps to device port 23)
+# These ports work for BOTH IPv4 and IPv6 WAN access to the DEVICE!
+#
 ENABLE_AUTO_PORT_FORWARDING = True
 AUTO_PORT_FORWARDS = {
-    8080: 80,  # HTTP: Gateway:8080 → Device:80 (avoids conflict with OpenWrt's LuCI)
-    2323: 23,  # Telnet: Gateway:2323 → Device:23 (avoids conflict if OpenWrt runs telnet)
-    8443: 443,  # HTTPS: Gateway:8443 → Device:443 (avoids conflict with OpenWrt's LuCI HTTPS)
-    2222: 22,  # SSH: Gateway:2222 → Device:22 (avoids conflict with OpenWrt's SSH/dropbear)
-    5900: 5900,  # VNC (no conflict - OpenWrt doesn't typically run VNC)
-    3389: 3389,  # RDP (no conflict - OpenWrt doesn't typically run RDP)
+    8080: 80,  # HTTP: Gateway WAN:8080 → Device:80 (avoids conflict with LuCI on LAN)
+    2323: 23,  # Telnet: Gateway WAN:2323 → Device:23 (avoids conflict with telnet)
 }
-# Port forwarding will use device's LAN IP (192.168.1.x)
-# Access from WAN: gateway_wan_ip:gateway_port → device:device_port
-#
-# Access examples:
-#   Device HTTP:  curl http://gateway_wan_ip:8080  → Device:80
-#   Device SSH:   ssh -p 2222 user@gateway_wan_ip  → Device:22
-#   Device Telnet: telnet gateway_wan_ip 2323      → Device:23
-#   OpenWrt HTTP:  curl http://gateway_wan_ip:80   → OpenWrt LuCI (gateway itself)
-#   OpenWrt SSH:   ssh -p 22 root@gateway_wan_ip   → OpenWrt SSH (gateway itself)
+
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ ACCESS EXAMPLES (Complete Reference)                                    │
+# ├─────────────────────────────────────────────────────────────────────────┤
+# │                                                                          │
+# │ FROM LAN (192.168.1.x network):                                         │
+# │   OpenWrt LuCI:     http://192.168.1.1:80          (gateway itself)     │
+# │   OpenWrt SSH:      ssh root@192.168.1.1           (port 22)            │
+# │   Device Direct:    http://192.168.1.128:80        (device's LAN IP)    │
+# │                     telnet 192.168.1.128 23                             │
+# │                                                                          │
+# │ FROM WAN via IPv4:                                                      │
+# │   Device HTTP:      http://100.124.66.225:8080     (via port forward)   │
+# │   Device Telnet:    telnet 100.124.66.225 2323     (via port forward)   │
+# │   OpenWrt LuCI:     NOT ACCESSIBLE (security)                           │
+# │   OpenWrt SSH:      NOT ACCESSIBLE (security)                           │
+# │                                                                          │
+# │ FROM WAN via IPv6:                                                      │
+# │   Device HTTP:      http://[2620:...:6dfc]:8080    (device's IPv6)      │
+# │   Device Telnet:    telnet 2620:...:6dfc 2323      (device's IPv6)      │
+# │   OpenWrt LuCI:     NOT ACCESSIBLE (LuCI on LAN only)                   │
+# │   OpenWrt SSH:      NOT ACCESSIBLE (SSH on LAN only)                    │
+# │                                                                          │
+# │ IMPORTANT: The device's IPv6 address is different from gateway's!       │
+# │ Gateway obtains device's IPv6 via MAC spoofing, but the proxy binds to  │
+# │ that SPECIFIC IPv6, not to gateway's own addresses.                     │
+# └─────────────────────────────────────────────────────────────────────────┘
 
 # IPv6→IPv4 Proxying (for IPv4-only devices)
 # Proxy IPv6 client connections to IPv4 backend devices
+# CRITICAL: This enables IPv6 access to IPv4-only devices on mostly IPv6 networks
 ENABLE_IPV6_TO_IPV4_PROXY = True  # Enable IPv6→IPv4 proxying
 
 # IPv6→IPv4 Proxy Port Mapping
-# Uses non-standard ports to avoid conflicts with OpenWrt LuCI
-# LuCI stays on standard ports 80/443, device proxies use 8080/2323
-# Format: {gateway_ipv6_port: device_port}
+# IMPORTANT: Remapped ports to avoid conflicts with OpenWrt services!
+# The gateway binds to device's SPECIFIC IPv6 address with remapped ports:
+# - LuCI web UI: Bound to gateway's LAN IPv4 (192.168.1.1:80)
+# - Device proxy: Bound to device's unique IPv6 on port 8080 ([2620:...:85c]:8080)
+# This allows BOTH to coexist on the same gateway without conflicts!
 #
-# Note: IPv6 proxying binds to the device's specific IPv6 address
-# Example: [2001:db8::1234]:8080 → 192.168.1.100:80
+# PORT CONFIGURATION (matches AUTO_PORT_FORWARDS for consistency):
+# - HTTP:   Port 8080 → Device port 80 or 5000
+# - Telnet: Port 2323 → Device port 23
+#
+# Format: {gateway_ipv6_port: device_port}
+# Note: IPv6 proxying binds to the device's specific IPv6 address on remapped ports
+# Example: [2620:10d:c050:100::85c]:8080 → 192.168.1.100:80
 IPV6_PROXY_PORT_FORWARDS = {
-    8080: 80,  # HTTP: Device:80 via IPv6:8080 (avoids LuCI on port 80)
-    2323: 23,  # Telnet: Device:23 via IPv6:2323 (avoids potential conflicts)
-    # HTTPS (443), SSH (22), VNC, RDP NOT included - firewall blocks them!
+    8080: 80,    # HTTP: Gateway IPv6:8080 → Device:80 (avoids conflict with LuCI)
+    2323: 23,    # Telnet: Gateway IPv6:2323 → Device:23 (avoids telnet conflicts)
 }
-# Access examples:
-#   Device HTTP via IPv6:   curl http://[device_ipv6]:80
-#   Device Telnet via IPv6: telnet device_ipv6 23
+# Device HTTP Alternative Port Support:
+# If your IPv4 device runs HTTP on port 5000 instead of 80, update the mapping:
+#   8080: 5000,  # HTTP Alt: Gateway IPv6:8080 → Device:5000
+#
+# Access examples (WAN IPv4 or IPv6):
+#   Device HTTP via IPv6:   curl http://[device_ipv6]:8080         → Device:80
+#   Device Telnet via IPv6: telnet device_ipv6 2323                → Device:23
+#   Device HTTP via IPv4:   curl http://gateway_wan_ip:8080        → Device:80
+#   Device Telnet via IPv4: telnet gateway_wan_ip 2323             → Device:23
+#   OpenWrt LuCI:           curl http://192.168.1.1:80             → Gateway LuCI
+#   OpenWrt SSH:            ssh -p 22 root@192.168.1.1             → Gateway SSH
 
 # Proxy backend selection: "socat" or "haproxy"
 # - socat: Lightweight, simple TCP proxy with excellent error messages (recommended for debugging)

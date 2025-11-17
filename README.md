@@ -248,22 +248,38 @@ When a device is discovered and successfully configured, the gateway automatical
 - **IPv4**: From gateway WAN to device LAN IP (NAT/DNAT via iptables)
 - **IPv6→IPv4**: From IPv6 clients to IPv4-only devices (HAProxy or socat proxy)
 
+### Why MAC Spoofing is Essential 🔑
+
+**The IPv4 device connected on the LAN needs its MAC pre-registered on the IPv6 network.**
+
+This gateway uses MAC spoofing to enable IPv6 connectivity for IPv4-only devices:
+
+1. **Network Context**: The network is mostly IPv6-only with limited IPv4 support
+2. **MAC Registration Requirement**: The upstream IPv6 network requires MAC addresses to be pre-registered
+3. **The Solution**: The gateway spoofs the IPv4 device's MAC address on the WAN interface (eth0) to:
+   - Request DHCPv6 lease for the device
+   - Register the device's MAC on the IPv6 network
+   - Enable IPv6 connectivity for the IPv4-only device
+4. **Result**: The IPv4-only device gains IPv6 capabilities through the gateway's proxy
+
+**Without MAC spoofing**: The IPv4 device would be invisible to the IPv6 network and unable to communicate.
+
 ### IPv6→IPv4 Proxy Backends
 
 The gateway supports **two proxy backends** for IPv6→IPv4 connectivity:
 
 | Backend | Type | Best For | Key Features |
 |---------|------|----------|--------------|
-| **HAProxy** (default) | Production-grade | Complex protocols, troubleshooting | Stats page, health checks, advanced logging |
-| **socat** | Lightweight | Simple setups, resource-constrained | Low memory, minimal overhead |
+| **socat** (default) | Lightweight | Simple setups, resource-constrained | Low memory, minimal overhead |
+| **HAProxy** | Production-grade | Complex protocols, troubleshooting | Stats page, health checks, advanced logging |
 
 **Switch backends** by editing `/opt/ipv4-ipv6-gateway/gateway_config.py`:
 ```python
-# Use HAProxy (production-grade, default)
-IPV6_PROXY_BACKEND = "haproxy"
-
-# OR use socat (lightweight)
+# Use socat (lightweight, default)
 IPV6_PROXY_BACKEND = "socat"
+
+# OR use HAProxy (production-grade)
+IPV6_PROXY_BACKEND = "haproxy"
 ```
 
 Then restart: `/etc/init.d/ipv4-ipv6-gateway restart`
@@ -272,16 +288,99 @@ Then restart: `/etc/init.d/ipv4-ipv6-gateway restart`
 
 By default, when a device connects and gets configured, these ports are automatically forwarded:
 
-| Gateway Port | Device Port | Service |
-|--------------|-------------|---------|
-| 8080 | 80 | HTTP |
-| 2323 | 23 | Telnet |
-| 8443 | 443 | HTTPS |
-| 2222 | 22 | SSH |
-| 5900 | 5900 | VNC |
-| 3389 | 3389 | RDP |
+| Gateway Port | Device Port | Service | Access Method |
+|--------------|-------------|---------|---------------|
+| 8080 | 80 or 5000 | HTTP | Both IPv4 and IPv6 WAN |
+| 2323 | 23 | Telnet | Both IPv4 and IPv6 WAN |
+
+**Port Remapping Rationale**: Gateway ports are remapped to avoid conflicts with OpenWrt services:
+- OpenWrt LuCI web UI runs on port 80
+- OpenWrt SSH runs on port 22
+- Device services are accessible on non-conflicting ports (8080, 2323)
 
 **This happens automatically for both IPv4 and IPv6 clients - no manual setup needed!** ✨
+
+### Architecture Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         NETWORK ARCHITECTURE                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  LAN SIDE (192.168.1.x)                    WAN SIDE (Internet)               │
+│  ═══════════════════                       ══════════════════                │
+│                                                                               │
+│  ┌─────────────┐                           ┌──────────────┐                 │
+│  │   Device    │  LAN IP: 192.168.1.128    │  IPv6 Router │                 │
+│  │ (IPv4-only) │◄──────────┐               │  & Firewall  │                 │
+│  │             │            │               └──────▲───────┘                 │
+│  └─────────────┘            │                      │                         │
+│                             │                      │                         │
+│                    ┌────────▼────────┐             │                         │
+│                    │  NanoPi Gateway │             │                         │
+│                    │   192.168.1.1   │             │                         │
+│                    ├─────────────────┤             │                         │
+│                    │  eth1 (LAN)     │             │                         │
+│                    │  eth0 (WAN)     │◄────────────┘                         │
+│                    └─────────────────┘                                       │
+│                           │ MAC Spoofing                                     │
+│                           │ Spoofs device MAC                                │
+│                           │ Gets IPv6: 2620:...:6dfc                         │
+│                           │                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                      HOW SERVICES ARE ACCESSIBLE                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  FROM LAN (devices on 192.168.1.x):                                          │
+│  ════════════════════════════════════                                        │
+│                                                                               │
+│    OpenWrt LuCI:    http://192.168.1.1:80        ┌──────────────────┐       │
+│    OpenWrt SSH:     ssh root@192.168.1.1:22      │  Gateway Itself  │       │
+│    OpenWrt Telnet:  telnet 192.168.1.1:23        │  (if enabled)    │       │
+│                                                   └──────────────────┘       │
+│                                                                               │
+│    Device HTTP:     http://192.168.1.128:80      ┌──────────────────┐       │
+│    Device Telnet:   telnet 192.168.1.128:23      │  Device Direct   │       │
+│                                                   │  (LAN access)    │       │
+│                                                   └──────────────────┘       │
+│                                                                               │
+│  FROM WAN via IPv4:                                                          │
+│  ═══════════════════                                                         │
+│                                                                               │
+│    OpenWrt LuCI:    ✗ NOT ACCESSIBLE                                         │
+│    OpenWrt SSH:     ✗ NOT ACCESSIBLE                                         │
+│    OpenWrt Telnet:  ✗ NOT ACCESSIBLE                                         │
+│    (Security: Gateway services only on LAN)                                  │
+│                                                                               │
+│    Device HTTP:     http://100.124.66.225:8080   ┌──────────────────┐       │
+│    Device Telnet:   telnet 100.124.66.225:2323   │  Via iptables    │       │
+│                     (Port forwards via NAT)       │  Port Forward    │       │
+│                                                   └──────────────────┘       │
+│                                                                               │
+│  FROM WAN via IPv6:                                                          │
+│  ═══════════════════                                                         │
+│                                                                               │
+│    OpenWrt LuCI:    ✗ NOT ACCESSIBLE                                         │
+│    OpenWrt SSH:     ✗ NOT ACCESSIBLE                                         │
+│    (LuCI only listens on LAN IPv4: 192.168.1.1)                              │
+│                                                                               │
+│    Device HTTP:     http://[2620:...:6dfc]:8080  ┌──────────────────┐       │
+│    Device Telnet:   telnet 2620:...:6dfc 2323    │  Via socat/HAProxy│      │
+│                     (Proxy on device's IPv6)      │  Bound to device │       │
+│                                                   │  specific IPv6   │       │
+│                                                   └──────────────────┘       │
+│                                                                               │
+│  KEY POINT:                                                                  │
+│  ──────────                                                                  │
+│  • Device IPv6 (2620:...:6dfc) ≠ Gateway IPv6                                │
+│  • Gateway spoofs device MAC to get device's IPv6                            │
+│  • Proxy binds to DEVICE'S IPv6, not gateway's IPv6                          │
+│  • This prevents port conflicts between LuCI and device services             │
+│                                                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
 
 ### How It Works
 
@@ -291,10 +390,10 @@ IPv4 Client → Gateway WAN:8080 → NAT (iptables) → Device LAN:80
 Example: curl http://100.124.66.225:8080  # Gateway WAN IPv4
 ```
 
-#### **IPv6→IPv4 Proxying (HAProxy/socat) - Device-Specific Binding!** ⭐ NEW ARCHITECTURE ⭐
+#### **IPv6→IPv4 Proxying (HAProxy/socat) - Device-Specific Binding!** ⭐
 ```
-IPv6 Client → Device's IPv6:2323 → HAProxy/socat (on gateway) → Device LAN:23
-Example: telnet 2620:10d:c050:100:46b7:d0ff:fea6:6dfc 2323
+IPv6 Client → Device's IPv6:8080 → HAProxy/socat (on gateway) → Device LAN:80
+Example: curl http://[2620:10d:c050:100:46b7:d0ff:fea6:6dfc]:8080
 ```
 
 **🎯 Key Architecture Feature:**
@@ -303,7 +402,7 @@ Each device gets its **OWN unique IPv6 address**, and HAProxy/socat binds to tha
 
 - **Device 1**: IPv6 `2620:10d:c050:100:46b7:d0ff:fea6:6dfc` → HAProxy binds to this IPv6
 - **Device 2**: IPv6 `2620:10d:c050:100:1234:5678:abcd:ef00` → HAProxy binds to this IPv6
-- **Result**: Both devices can use the same ports (23, 80, etc.) without conflict!
+- **Result**: Both devices can use the same ports (8080, 2323, etc.) without conflict!
 
 **How it works:**
 1. Gateway discovers device MAC `44:b7:d0:a6:6d:fc`
@@ -333,21 +432,18 @@ gateway-devices-direct
 # Telnet to device (automatic port forward)
 telnet 100.124.66.225 2323  # Gateway WAN IPv4:2323 → Device LAN:23
 
-# HTTP access
-curl http://100.124.66.225:8080  # Gateway WAN IPv4:8080 → Device LAN:80
-
-# SSH access
-ssh -p 2222 user@100.124.66.225  # Gateway WAN IPv4:2222 → Device LAN:22
+# HTTP access (works for device port 80 or 5000)
+curl http://100.124.66.225:8080  # Gateway WAN IPv4:8080 → Device LAN:80 or 5000
 ```
 
-**From WAN network (IPv6 client) - NEW!:**
+**From WAN network (IPv6 client):**
 ```bash
-# Get gateway's WAN IPv6 (obtained by spoofing device MAC)
+# Get device's WAN IPv6 (obtained by spoofing device MAC)
 gateway-devices-direct
 # Shows: "ipv6_address": "2620:10d:c050:100:46b7:d0ff:fea6:6dfc"
 
-# Access device via IPv6 → socat proxies to IPv4 device!
-telnet 2620:10d:c050:100:46b7:d0ff:fea6:6dfc 23      # → Device:23 ✅
+# Access device via IPv6 → socat/HAProxy proxies to IPv4 device!
+telnet 2620:10d:c050:100:46b7:d0ff:fea6:6dfc 2323      # → Device:23 ✅
 curl http://[2620:10d:c050:100:46b7:d0ff:fea6:6dfc]:80  # → Device:80 ✅
 ssh -p 22 user@2620:10d:c050:100:46b7:d0ff:fea6:6dfc   # → Device:22 ✅
 
@@ -933,6 +1029,158 @@ sysctl net.ipv6.conf.eth0.autoconf
 # View logs
 tail -f /var/log/ipv4-ipv6-gateway.log | grep -i "slaac\|dhcpv6"
 ```
+
+### Enhanced IPv6 Packet Handling (NEW! 🔥)
+
+The gateway now includes **comprehensive IPv6 packet handling improvements** to prevent connection drops and packet loss issues commonly seen in IPv6 environments.
+
+#### Problem Solved
+
+**Common IPv6 issues:**
+- ❌ Connections drop randomly
+- ❌ Packets don't reach device
+- ❌ Neighbor discovery fails
+- ❌ Routes not established
+- ❌ Firewall blocks traffic
+
+**Root causes:**
+- Missing proxy NDP configuration
+- Incorrect sysctl settings for forwarding mode
+- No connection tracking timeout tuning
+- Missing IPv6 routes
+- Firewall rules not configured
+
+#### Solution Implemented
+
+The gateway now automatically configures **25+ critical IPv6 settings** when enabling IPv6 on an interface:
+
+**1. Core IPv6 Enablement:**
+```bash
+net.ipv6.conf.eth0.disable_ipv6 = 0
+net.ipv6.conf.eth0.accept_ra = 2      # Accept RA even with forwarding
+net.ipv6.conf.eth0.autoconf = 1
+```
+
+**2. Packet Handling & Stability:**
+```bash
+net.ipv6.conf.eth0.accept_dad = 0     # Disable DAD for faster setup
+net.ipv6.conf.eth0.use_tempaddr = 0    # No temporary addresses
+net.ipv6.conf.eth0.accept_redirects = 1
+net.ipv6.conf.eth0.mtu = 1500          # Standard MTU
+net.ipv6.conf.eth0.hop_limit = 64
+```
+
+**3. Neighbor Discovery Optimization:**
+```bash
+net.ipv6.conf.eth0.dad_transmits = 0              # Skip DAD
+net.ipv6.conf.eth0.router_solicitations = 3       # RS retries
+net.ipv6.conf.eth0.router_solicitation_delay = 1
+net.ipv6.conf.eth0.router_solicitation_interval = 4
+```
+
+**4. Connection Tracking (Prevents Drops):**
+```bash
+net.netfilter.nf_conntrack_tcp_timeout_established = 7200  # 2 hours
+net.netfilter.nf_conntrack_tcp_timeout_close_wait = 60
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 120
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 120
+```
+
+**5. Neighbor Cache Scaling:**
+```bash
+net.ipv6.neigh.default.gc_thresh1 = 1024
+net.ipv6.neigh.default.gc_thresh2 = 2048
+net.ipv6.neigh.default.gc_thresh3 = 4096
+```
+
+**6. Enhanced Proxy NDP (5-Step Process):**
+
+For each IPv6 address, the gateway now performs:
+1. ✅ Enables global proxy_ndp sysctls
+2. ✅ Adds proxy NDP entry for specific IPv6
+3. ✅ Sends Neighbor Advertisement to all-nodes (ff02::1)
+4. ✅ Pings default gateway directly if available
+5. ✅ Adds explicit local route for IPv6
+6. ✅ Adds ip6tables firewall rules (INPUT/FORWARD)
+
+**Before (3 steps):**
+```python
+1. Enable proxy_ndp sysctl
+2. Add NDP entry
+3. Send 1 ping to ff02::1
+```
+
+**After (6 steps with redundancy):**
+```python
+1. Enable proxy_ndp + forwarding sysctls
+2. Add NDP entry
+3. Send 2 pings to ff02::1 (all-nodes)
+4. Send ping to default gateway (if found)
+5. Add local IPv6 route
+6. Add ip6tables rules for this address
+```
+
+#### Benefits
+
+✅ **No more connection drops** - Extended TCP timeout prevents premature termination
+✅ **Faster address assignment** - DAD disabled for immediate use
+✅ **Better neighbor discovery** - Multiple advertisement methods
+✅ **Explicit routing** - Local routes ensure packet delivery
+✅ **Firewall configured** - ip6tables rules allow traffic
+✅ **Optimized cache** - Larger neighbor cache prevents eviction
+
+#### Verification
+
+```bash
+# Check connection tracking timeouts
+sysctl net.netfilter.nf_conntrack_tcp_timeout_established
+# Should show: 7200 (2 hours)
+
+# Check proxy NDP enabled
+sysctl net.ipv6.conf.eth0.proxy_ndp
+# Should show: 1
+
+# Check neighbor cache
+sysctl net.ipv6.neigh.default.gc_thresh3
+# Should show: 4096
+
+# View IPv6 routes
+ip -6 route show table local | grep <device_ipv6>
+# Should show local route for device's IPv6
+
+# View ip6tables rules
+ip6tables -L INPUT -n | grep <device_ipv6>
+ip6tables -L FORWARD -n | grep <device_ipv6>
+# Should show ACCEPT rules
+```
+
+#### Troubleshooting Still Seeing Drops?
+
+```bash
+# 1. Check if connection tracking table is full
+cat /proc/sys/net/netfilter/nf_conntrack_count
+cat /proc/sys/net/netfilter/nf_conntrack_max
+# If count >= max, increase max:
+echo 262144 > /proc/sys/net/netfilter/nf_conntrack_max
+
+# 2. Monitor dropped packets
+watch -n 1 'ip -6 -s -s neigh show'
+# Look for FAILED or INCOMPLETE entries
+
+# 3. Check gateway is responding to NDP
+tcpdump -i eth0 -v icmp6
+# Should see Neighbor Solicitation/Advertisement
+
+# 4. Verify MTU not causing fragmentation
+ping6 -M do -s 1472 <device_ipv6>
+# Should work. If not, reduce MTU:
+ip link set eth0 mtu 1280
+
+# 5. Test direct connectivity
+telnet <device_ipv6> 2323
+# If this works but browser/app doesn't, it's an application issue
+```
+
 
 ### File Structure
 

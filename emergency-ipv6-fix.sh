@@ -45,33 +45,95 @@ echo "----------------------------------------"
 if command -v uci >/dev/null 2>&1; then
     WAN_DEVICE=$(uci get network.wan.device 2>/dev/null || uci get network.wan.ifname 2>/dev/null || echo "")
     if [ "$WAN_DEVICE" = "eth0" ]; then
-        echo -e "${YELLOW}⚠ WARNING: OpenWrt netifd IS managing eth0!${NC}"
+        echo -e "${RED}⚠ CRITICAL: OpenWrt netifd IS managing eth0!${NC}"
         echo ""
-        echo "This can interfere with IPv6 settings!"
+        echo -e "${YELLOW}This causes conflicts with the gateway service!${NC}"
+        echo "  - netifd controls eth0 via UCI config"
+        echo "  - Gateway controls eth0 via Python/sysctl"
+        echo "  - They fight over settings → IPv6 breaks!"
         echo ""
-        echo "Option 1: Configure IPv6 via UCI (recommended for OpenWrt):"
-        echo "  uci set network.wan.accept_ra='2'"
-        echo "  uci set network.wan.send_rs='1'"
-        echo "  uci commit network"
-        echo "  /etc/init.d/network restart"
+        echo -e "${GREEN}RECOMMENDED SOLUTION:${NC}"
+        echo -e "${BLUE}Option 1: Disable netifd management of eth0 (RECOMMENDED)${NC}"
+        echo "  - Gateway gets full control of eth0"
+        echo "  - No more conflicts or race conditions"
+        echo "  - Run: ./disable-netifd-eth0.sh"
         echo ""
-        echo "Option 2: Disable netifd management of eth0 (manual control)"
+        echo -e "${YELLOW}Alternative (if you want to keep netifd):${NC}"
+        echo -e "${BLUE}Option 2: Configure IPv6 via UCI only (NOT recommended)${NC}"
+        echo "  - Sets accept_ra=2 in UCI"
+        echo "  - Gateway may still conflict with netifd"
+        echo "  - May require manual coordination"
         echo ""
-        read -p "Apply Option 1 now? (y/n) " -n 1 -r
+        read -p "Disable netifd management of eth0? (y/n) " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "${BLUE}Disabling netifd management of eth0...${NC}"
+            echo ""
+
+            # Backup network config
+            if [ -f /etc/config/network ]; then
+                BACKUP_FILE="/etc/config/network.backup.$(date +%Y%m%d_%H%M%S)"
+                cp /etc/config/network "$BACKUP_FILE"
+                echo -e "${GREEN}✓ Backed up network config to: $BACKUP_FILE${NC}"
+            fi
+
+            # Remove eth0 from WAN interface
+            echo -e "${BLUE}Removing eth0 from network.wan...${NC}"
+            uci delete network.wan.device 2>/dev/null || true
+            uci delete network.wan.ifname 2>/dev/null || true
+
+            # Remove eth0 from WAN6 interface
+            uci delete network.wan6.device 2>/dev/null || true
+            uci delete network.wan6.ifname 2>/dev/null || true
+
+            # Create dummy interface to tell netifd to ignore eth0
+            echo -e "${BLUE}Creating eth0_manual interface (proto=none)...${NC}"
+            uci set network.eth0_manual=interface
+            uci set network.eth0_manual.ifname='eth0'
+            uci set network.eth0_manual.proto='none'
+            uci set network.eth0_manual.auto='0'
+
+            # Commit changes
+            uci commit network
+            echo -e "${GREEN}✓ UCI changes committed${NC}"
+            echo ""
+
+            echo -e "${BLUE}Restarting network...${NC}"
+            /etc/init.d/network restart
+            sleep 5
+            echo -e "${GREEN}✓ Network restarted${NC}"
+            echo ""
+            echo -e "${GREEN}✓ netifd management of eth0 DISABLED${NC}"
+            echo -e "${YELLOW}  eth0 is now manually managed by gateway service${NC}"
+            echo ""
+        else
+            echo -e "${YELLOW}Skipped disabling netifd${NC}"
+            echo ""
+            echo "Trying UCI configuration instead (may still have conflicts)..."
+            echo ""
+
+            # Backup network config
+            if [ -f /etc/config/network ]; then
+                BACKUP_FILE="/etc/config/network.backup.$(date +%Y%m%d_%H%M%S)"
+                cp /etc/config/network "$BACKUP_FILE"
+                echo -e "${GREEN}✓ Backed up network config to: $BACKUP_FILE${NC}"
+            fi
+
             echo -e "${BLUE}Configuring IPv6 via UCI...${NC}"
             uci set network.wan.accept_ra='2'
             uci set network.wan.send_rs='1'
             uci commit network
-            echo -e "${GREEN}✓ UCI configured${NC}"
+            echo -e "${GREEN}✓ UCI configured: accept_ra=2${NC}"
             echo ""
             echo -e "${BLUE}Restarting network...${NC}"
             /etc/init.d/network restart
             sleep 5
             echo -e "${GREEN}✓ Network restarted${NC}"
             echo ""
-            echo "Proceeding with manual fix as well (belt and suspenders)..."
+            echo -e "${YELLOW}⚠ WARNING: netifd still manages eth0${NC}"
+            echo -e "${YELLOW}  This may cause conflicts with gateway service!${NC}"
+            echo -e "${YELLOW}  If IPv6 still doesn't work, run: ./disable-netifd-eth0.sh${NC}"
+            echo ""
         fi
     else
         echo -e "${GREEN}✓ netifd not managing eth0 (device: ${WAN_DEVICE:-none})${NC}"

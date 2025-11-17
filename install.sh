@@ -512,6 +512,22 @@ if [ -f "debug-connections.sh" ]; then
 else
     echo -e "${YELLOW}⚠ debug-connections.sh not found, skipping${NC}"
 fi
+
+if [ -f "free-ipv6-ports.sh" ]; then
+    cp free-ipv6-ports.sh /usr/bin/free-ipv6-ports
+    chmod +x /usr/bin/free-ipv6-ports
+    echo -e "${GREEN}✓ IPv6 port freeing script installed to /usr/bin/free-ipv6-ports${NC}"
+else
+    echo -e "${YELLOW}⚠ free-ipv6-ports.sh not found, skipping${NC}"
+fi
+
+if [ -f "setup-ipv6-port-forwarding.sh" ]; then
+    cp setup-ipv6-port-forwarding.sh /usr/bin/setup-ipv6-port-forwarding
+    chmod +x /usr/bin/setup-ipv6-port-forwarding
+    echo -e "${GREEN}✓ IPv6 port forwarding script installed to /usr/bin/setup-ipv6-port-forwarding${NC}"
+else
+    echo -e "${YELLOW}⚠ setup-ipv6-port-forwarding.sh not found, skipping${NC}"
+fi
 echo ""
 
 # Step 4: Create systemd service file (only if systemd exists)
@@ -897,8 +913,30 @@ if command -v uci >/dev/null 2>&1; then
     WAN_DEVICE=$(uci get network.wan.device 2>/dev/null || uci get network.wan.ifname 2>/dev/null || echo "")
 
     if [ "$WAN_DEVICE" = "eth0" ] || [ -n "$(uci show network | grep -E 'ifname.*eth0|device.*eth0')" ]; then
-        echo -e "${BLUE}Detected: OpenWrt netifd is managing eth0${NC}"
-        echo -e "${YELLOW}This requires UCI configuration to prevent IPv6 conflicts!${NC}"
+        echo -e "${RED}⚠ CRITICAL: OpenWrt netifd IS managing eth0!${NC}"
+        echo ""
+        echo -e "${YELLOW}This causes conflicts with the gateway service!${NC}"
+        echo "  - netifd controls eth0 via UCI config"
+        echo "  - Gateway controls eth0 via Python/sysctl"
+        echo "  - They fight over settings → IPv6 may break!"
+        echo ""
+        echo -e "${GREEN}CHOOSE YOUR IPv6 CONFIGURATION METHOD:${NC}"
+        echo ""
+        echo -e "${BLUE}Option 1: Disable netifd management of eth0 (RECOMMENDED)${NC}"
+        echo "  ✓ Gateway gets FULL control of eth0"
+        echo "  ✓ NO conflicts or race conditions"
+        echo "  ✓ Most reliable for IPv6"
+        echo "  ✗ netifd won't manage eth0 anymore"
+        echo ""
+        echo -e "${BLUE}Option 2: Configure IPv6 via UCI (keep netifd)${NC}"
+        echo "  ✓ netifd still manages eth0"
+        echo "  ✓ Standard OpenWrt approach"
+        echo "  ✗ Gateway + netifd may conflict"
+        echo "  ✗ May require manual fixes if issues arise"
+        echo ""
+        echo -e "${YELLOW}Which option do you prefer?${NC}"
+        read -p "Enter 1 (disable netifd) or 2 (use UCI): " -n 1 -r NETIFD_CHOICE
+        echo
         echo ""
 
         # Backup network config before modifying
@@ -909,27 +947,70 @@ if command -v uci >/dev/null 2>&1; then
             echo -e "${BLUE}  Backed up network config to: $NETWORK_BACKUP${NC}"
         fi
 
-        echo -e "${BLUE}  Configuring WAN interface for IPv6 with accept_ra=2...${NC}"
+        if [ "$NETIFD_CHOICE" = "1" ]; then
+            # OPTION 1: Disable netifd management of eth0
+            echo -e "${GREEN}=== OPTION 1 SELECTED: Disabling netifd management ===${NC}"
+            echo ""
 
-        # CRITICAL: Configure accept_ra=2 for WAN interface
-        # This allows Router Advertisements even with IPv6 forwarding enabled
-        # Without this, eth0 will NOT get IPv6 from router!
-        uci set network.wan.accept_ra='2' 2>/dev/null || true
-        uci set network.wan.send_rs='1' 2>/dev/null || true
+            # Save choice for uninstall
+            echo "netifd_disabled" > "$CONFIG_DIR/ipv6_method.txt"
 
-        # Also configure wan6 if it exists
-        if uci show network.wan6 >/dev/null 2>&1; then
-            uci set network.wan6.accept_ra='2' 2>/dev/null || true
-            uci set network.wan6.send_rs='1' 2>/dev/null || true
+            # Remove eth0 from WAN interface
+            echo -e "${BLUE}  Removing eth0 from network.wan...${NC}"
+            uci delete network.wan.device 2>/dev/null || true
+            uci delete network.wan.ifname 2>/dev/null || true
+
+            # Remove eth0 from WAN6 interface
+            uci delete network.wan6.device 2>/dev/null || true
+            uci delete network.wan6.ifname 2>/dev/null || true
+
+            # Create dummy interface to tell netifd to ignore eth0
+            echo -e "${BLUE}  Creating eth0_manual interface (proto=none)...${NC}"
+            uci set network.eth0_manual=interface
+            uci set network.eth0_manual.ifname='eth0'
+            uci set network.eth0_manual.proto='none'
+            uci set network.eth0_manual.auto='0'
+
+            # Commit changes
+            uci commit network 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ UCI changes committed${NC}"
+            echo -e "${GREEN}  ✓ netifd will NO LONGER manage eth0${NC}"
+            echo -e "${YELLOW}  ✓ Gateway has FULL control via Python/sysctl${NC}"
+
+        else
+            # OPTION 2: Configure via UCI (keep netifd)
+            echo -e "${GREEN}=== OPTION 2 SELECTED: Configuring via UCI ===${NC}"
+            echo ""
+
+            # Save choice for uninstall
+            echo "uci_configured" > "$CONFIG_DIR/ipv6_method.txt"
+
+            echo -e "${BLUE}  Configuring WAN interface for IPv6 with accept_ra=2...${NC}"
+
+            # CRITICAL: Configure accept_ra=2 for WAN interface
+            # This allows Router Advertisements even with IPv6 forwarding enabled
+            # Without this, eth0 will NOT get IPv6 from router!
+            uci set network.wan.accept_ra='2' 2>/dev/null || true
+            uci set network.wan.send_rs='1' 2>/dev/null || true
+
+            # Also configure wan6 if it exists
+            if uci show network.wan6 >/dev/null 2>&1; then
+                uci set network.wan6.accept_ra='2' 2>/dev/null || true
+                uci set network.wan6.send_rs='1' 2>/dev/null || true
+            fi
+
+            # Commit changes
+            uci commit network 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ UCI configured: accept_ra=2, send_rs=1${NC}"
+            echo -e "${YELLOW}  ⚠ netifd still manages eth0 (may conflict with gateway)${NC}"
+            echo -e "${YELLOW}  ✓ Gateway will ALSO set accept_ra=2 via sysctl${NC}"
         fi
 
-        # Commit changes
-        uci commit network 2>/dev/null || true
-
-        echo -e "${GREEN}  ✓ UCI configured: accept_ra=2, send_rs=1${NC}"
-        echo -e "${YELLOW}  This ensures eth0 gets IPv6 even with forwarding enabled!${NC}"
+        # Restart network to apply settings
         echo ""
-        echo -e "${BLUE}  Restarting network to apply UCI settings...${NC}"
+        echo -e "${BLUE}  Restarting network to apply settings...${NC}"
         /etc/init.d/network restart 2>/dev/null || true
 
         # Wait for network to stabilize
@@ -1131,7 +1212,19 @@ echo "   gateway-devices         # List all devices"
 echo "   gateway-devices active  # List active devices"
 echo "   tail -f /var/log/ipv4-ipv6-gateway.log  # View logs"
 echo ""
-echo -e "${YELLOW}API Endpoints:${NC}"
+echo -e "${YELLOW}Port Forwarding (Automatic):${NC}"
+echo "   Gateway port 8080 → Device port 80  (HTTP)"
+echo "   Gateway port 2323 → Device port 23  (Telnet)"
+echo "   Access: http://192.168.1.1:8080 or http://<wan-ip>:8080"
+echo ""
+echo -e "${YELLOW}OpenWrt Services (LAN Only):${NC}"
+echo "   LuCI Web UI: http://192.168.1.1:80    (Not exposed on WAN)"
+echo "   SSH:         ssh root@192.168.1.1:22  (Not exposed on WAN)"
+echo "   Note: Device services use ports 8080/2323 to avoid conflicts"
+echo ""
+echo -e "${YELLOW}API Endpoints (DISABLED by default):${NC}"
+echo "   Note: REST API is disabled in gateway_config.py (API_ENABLED = False)"
+echo "   To enable: Edit $CONFIG_DIR/config.py and set API_ENABLED = True"
 echo "   http://localhost:5050/health    # Health check"
 echo "   http://localhost:5050/status    # Gateway status"
 echo "   http://localhost:5050/devices   # List devices"

@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # uninstall.sh — Safely uninstall the IPv4↔IPv6 Gateway Service
-# and clean up all installed componenso ts.
+# and clean up all installed components.
 #
 # Default:
 #   - Stops and disables the service
@@ -210,6 +210,7 @@ fi
 
 # CRITICAL: Clean up iptables/ip6tables rules
 echo -e "${BLUE}- Cleaning up firewall rules (iptables/ip6tables)...${NC}"
+echo -e "${BLUE}  Removing port forwarding rules (8080→80, 2323→23, etc.)...${NC}"
 
 # Flush NAT rules (PREROUTING, OUTPUT chains)
 if command -v iptables >/dev/null 2>&1; then
@@ -221,7 +222,7 @@ if command -v iptables >/dev/null 2>&1; then
     # Flush FORWARD chain (port forwarding rules)
     iptables -F FORWARD 2>/dev/null || true
 
-    echo -e "${GREEN}  ✓ Flushed iptables rules${NC}"
+    echo -e "${GREEN}  ✓ Flushed iptables rules (all port forwards removed)${NC}"
 fi
 
 if command -v ip6tables >/dev/null 2>&1; then
@@ -325,35 +326,136 @@ fi
 # CRITICAL: Restore UCI network settings (if modified during install)
 echo -e "${BLUE}- Restoring UCI network settings...${NC}"
 if command -v uci >/dev/null 2>&1; then
-    # Check if we have a backup from install
-    LATEST_UCI_BACKUP=$(ls -t "$CONFIG_DIR"/network.uci_backup.* 2>/dev/null | head -1)
-
-    if [ -n "$LATEST_UCI_BACKUP" ] && [ -f "$LATEST_UCI_BACKUP" ]; then
-        echo -e "${BLUE}  Found UCI backup: $LATEST_UCI_BACKUP${NC}"
-        echo -e "${BLUE}  Restoring original accept_ra settings...${NC}"
-
-        # Restore the backed up network config
-        cp "$LATEST_UCI_BACKUP" /etc/config/network 2>/dev/null || true
-
-        # Reload UCI
-        uci commit network 2>/dev/null || true
-
-        echo -e "${GREEN}  ✓ UCI network config restored from backup${NC}"
-    else
-        # No backup found - set safe defaults
-        echo -e "${YELLOW}  No UCI backup found - setting safe defaults${NC}"
-
-        # Remove gateway-specific accept_ra settings (revert to OpenWrt defaults)
-        uci delete network.wan.accept_ra 2>/dev/null || true
-        uci delete network.wan.send_rs 2>/dev/null || true
-        uci delete network.wan6.accept_ra 2>/dev/null || true
-        uci delete network.wan6.send_rs 2>/dev/null || true
-
-        # Commit changes
-        uci commit network 2>/dev/null || true
-
-        echo -e "${GREEN}  ✓ Reset UCI to safe defaults${NC}"
+    # Check which IPv6 configuration method was used during install
+    IPV6_METHOD=""
+    if [ -f "$CONFIG_DIR/ipv6_method.txt" ]; then
+        IPV6_METHOD=$(cat "$CONFIG_DIR/ipv6_method.txt" 2>/dev/null || echo "")
+        echo -e "${BLUE}  Detected install method: ${IPV6_METHOD}${NC}"
     fi
+
+    if [ "$IPV6_METHOD" = "netifd_disabled" ]; then
+        # OPTION 1 was used: netifd was disabled for eth0
+        echo -e "${BLUE}  Restoring netifd management of eth0...${NC}"
+
+        # Check if we have a backup from install
+        LATEST_UCI_BACKUP=$(ls -t "$CONFIG_DIR"/network.uci_backup.* 2>/dev/null | head -1)
+
+        if [ -n "$LATEST_UCI_BACKUP" ] && [ -f "$LATEST_UCI_BACKUP" ]; then
+            echo -e "${BLUE}  Found UCI backup: $LATEST_UCI_BACKUP${NC}"
+            echo -e "${BLUE}  Restoring original network config...${NC}"
+
+            # Restore the backed up network config
+            cp "$LATEST_UCI_BACKUP" /etc/config/network 2>/dev/null || true
+
+            # Reload UCI
+            uci commit network 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ UCI network config restored from backup${NC}"
+            echo -e "${GREEN}  ✓ netifd will manage eth0 again${NC}"
+        else
+            # No backup found - manually re-enable netifd management
+            echo -e "${YELLOW}  No UCI backup found - manually re-enabling netifd${NC}"
+
+            # Remove the eth0_manual dummy interface
+            uci delete network.eth0_manual 2>/dev/null || true
+
+            # Re-add eth0 to WAN interface
+            echo -e "${BLUE}  Adding eth0 back to network.wan...${NC}"
+            uci set network.wan.device='eth0' 2>/dev/null || uci set network.wan.ifname='eth0' 2>/dev/null || true
+            uci set network.wan.proto='dhcp' 2>/dev/null || true
+
+            # Re-add eth0 to WAN6 interface
+            echo -e "${BLUE}  Adding eth0 back to network.wan6...${NC}"
+            uci set network.wan6.device='eth0' 2>/dev/null || uci set network.wan6.ifname='eth0' 2>/dev/null || true
+            uci set network.wan6.proto='dhcpv6' 2>/dev/null || true
+
+            # Commit changes
+            uci commit network 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ Re-enabled netifd management of eth0${NC}"
+        fi
+
+    elif [ "$IPV6_METHOD" = "uci_configured" ]; then
+        # OPTION 2 was used: UCI was configured with accept_ra=2
+        echo -e "${BLUE}  Removing gateway-specific UCI settings (accept_ra=2)...${NC}"
+
+        # Check if we have a backup from install
+        LATEST_UCI_BACKUP=$(ls -t "$CONFIG_DIR"/network.uci_backup.* 2>/dev/null | head -1)
+
+        if [ -n "$LATEST_UCI_BACKUP" ] && [ -f "$LATEST_UCI_BACKUP" ]; then
+            echo -e "${BLUE}  Found UCI backup: $LATEST_UCI_BACKUP${NC}"
+            echo -e "${BLUE}  Restoring original accept_ra settings...${NC}"
+
+            # Restore the backed up network config
+            cp "$LATEST_UCI_BACKUP" /etc/config/network 2>/dev/null || true
+
+            # Reload UCI
+            uci commit network 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ UCI network config restored from backup${NC}"
+        else
+            # No backup found - remove gateway-specific settings
+            echo -e "${YELLOW}  No UCI backup found - removing gateway settings${NC}"
+
+            # Remove gateway-specific accept_ra settings (revert to OpenWrt defaults)
+            uci delete network.wan.accept_ra 2>/dev/null || true
+            uci delete network.wan.send_rs 2>/dev/null || true
+            uci delete network.wan6.accept_ra 2>/dev/null || true
+            uci delete network.wan6.send_rs 2>/dev/null || true
+
+            # Commit changes
+            uci commit network 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ Reset UCI to safe defaults${NC}"
+        fi
+
+    else
+        # No method marker found - try both restore approaches
+        echo -e "${YELLOW}  No install method detected - trying backup restore...${NC}"
+
+        LATEST_UCI_BACKUP=$(ls -t "$CONFIG_DIR"/network.uci_backup.* 2>/dev/null | head -1)
+
+        if [ -n "$LATEST_UCI_BACKUP" ] && [ -f "$LATEST_UCI_BACKUP" ]; then
+            echo -e "${BLUE}  Found UCI backup: $LATEST_UCI_BACKUP${NC}"
+            echo -e "${BLUE}  Restoring original network config...${NC}"
+
+            # Restore the backed up network config
+            cp "$LATEST_UCI_BACKUP" /etc/config/network 2>/dev/null || true
+
+            # Reload UCI
+            uci commit network 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ UCI network config restored from backup${NC}"
+        else
+            # No backup found - apply safe defaults
+            echo -e "${YELLOW}  No UCI backup found - applying safe defaults${NC}"
+
+            # Remove eth0_manual dummy interface (if it exists)
+            uci delete network.eth0_manual 2>/dev/null || true
+
+            # Remove gateway-specific accept_ra settings
+            uci delete network.wan.accept_ra 2>/dev/null || true
+            uci delete network.wan.send_rs 2>/dev/null || true
+            uci delete network.wan6.accept_ra 2>/dev/null || true
+            uci delete network.wan6.send_rs 2>/dev/null || true
+
+            # Ensure WAN has eth0
+            WAN_DEVICE=$(uci get network.wan.device 2>/dev/null || uci get network.wan.ifname 2>/dev/null || echo "")
+            if [ -z "$WAN_DEVICE" ]; then
+                echo -e "${BLUE}  Re-adding eth0 to network.wan...${NC}"
+                uci set network.wan.device='eth0' 2>/dev/null || uci set network.wan.ifname='eth0' 2>/dev/null || true
+            fi
+
+            # Commit changes
+            uci commit network 2>/dev/null || true
+
+            echo -e "${GREEN}  ✓ Applied safe defaults${NC}"
+        fi
+    fi
+
+    # Clean up method marker
+    rm -f "$CONFIG_DIR/ipv6_method.txt" 2>/dev/null || true
+
 else
     echo -e "${BLUE}  UCI not available (not OpenWrt)${NC}"
 fi

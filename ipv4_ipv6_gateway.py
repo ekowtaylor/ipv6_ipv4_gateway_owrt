@@ -1032,33 +1032,65 @@ class DHCPv6Manager:
 
     def _enable_ipv6_on_interface(self) -> bool:
         """
-        Enable IPv6 on interface for SLAAC.
-        This enables Router Advertisement processing.
+        Enable IPv6 on interface for SLAAC with enhanced packet handling.
+
+        This configures comprehensive IPv6 settings to prevent packet drops and
+        connection issues commonly seen in IPv6 environments.
         """
         try:
-            # Enable IPv6 forwarding and accept RA
-            subprocess.run(
-                [
-                    cfg.CMD_SYSCTL,
-                    "-w",
-                    f"net.ipv6.conf.{self.interface}.disable_ipv6=0",
-                ],
-                check=True,
-                capture_output=True,
-            )
-            subprocess.run(
-                [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.accept_ra=2"],
-                check=True,
-                capture_output=True,
-            )
-            subprocess.run(
-                [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.autoconf=1"],
-                check=True,
-                capture_output=True,
-            )
-            self.logger.debug(f"Enabled IPv6/SLAAC on {self.interface}")
+            # Core IPv6 settings
+            sysctl_settings = [
+                # Basic IPv6 enablement
+                (f"net.ipv6.conf.{self.interface}.disable_ipv6", "0"),
+                (f"net.ipv6.conf.{self.interface}.accept_ra", "2"),  # Accept RA even with forwarding
+                (f"net.ipv6.conf.{self.interface}.autoconf", "1"),
+
+                # CRITICAL: Packet handling and connection stability
+                (f"net.ipv6.conf.{self.interface}.accept_dad", "0"),  # Disable DAD to speed up address assignment
+                (f"net.ipv6.conf.{self.interface}.use_tempaddr", "0"),  # Don't use temporary addresses
+                (f"net.ipv6.conf.{self.interface}.accept_redirects", "1"),  # Accept ICMP redirects
+                (f"net.ipv6.conf.{self.interface}.accept_source_route", "0"),  # Security: no source routing
+
+                # MTU and fragmentation handling (prevents packet drops)
+                (f"net.ipv6.conf.{self.interface}.mtu", "1500"),  # Standard MTU
+                (f"net.ipv6.conf.{self.interface}.hop_limit", "64"),  # Standard hop limit
+
+                # Neighbor discovery optimization
+                (f"net.ipv6.conf.{self.interface}.dad_transmits", "0"),  # Skip DAD transmits
+                (f"net.ipv6.conf.{self.interface}.router_solicitations", "3"),  # RS retries
+                (f"net.ipv6.conf.{self.interface}.router_solicitation_delay", "1"),  # Delay in seconds
+                (f"net.ipv6.conf.{self.interface}.router_solicitation_interval", "4"),  # Interval in seconds
+
+                # Global IPv6 settings for connection stability
+                ("net.ipv6.conf.all.forwarding", "1"),  # Enable forwarding (gateway mode)
+                ("net.ipv6.conf.all.accept_ra", "2"),  # Accept RA globally even with forwarding
+                ("net.ipv6.neigh.default.gc_thresh1", "1024"),  # Neighbor cache size
+                ("net.ipv6.neigh.default.gc_thresh2", "2048"),
+                ("net.ipv6.neigh.default.gc_thresh3", "4096"),
+
+                # Connection tracking and timeout settings (prevent drops)
+                ("net.netfilter.nf_conntrack_tcp_timeout_established", "7200"),  # 2 hours for established
+                ("net.netfilter.nf_conntrack_tcp_timeout_close_wait", "60"),
+                ("net.netfilter.nf_conntrack_tcp_timeout_fin_wait", "120"),
+                ("net.netfilter.nf_conntrack_tcp_timeout_time_wait", "120"),
+            ]
+
+            # Apply all settings
+            for setting, value in sysctl_settings:
+                try:
+                    subprocess.run(
+                        [cfg.CMD_SYSCTL, "-w", f"{setting}={value}"],
+                        check=True,
+                        capture_output=True,
+                    )
+                except subprocess.CalledProcessError as e:
+                    # Some settings may not exist on all kernels - log but continue
+                    self.logger.debug(f"Could not set {setting}={value}: {e}")
+
+            self.logger.info(f"✓ Enabled IPv6 with enhanced packet handling on {self.interface}")
             return True
-        except subprocess.CalledProcessError as e:
+
+        except Exception as e:
             self.logger.error(f"Failed to enable IPv6 on {self.interface}: {e}")
             return False
 
@@ -1066,12 +1098,14 @@ class DHCPv6Manager:
         """
         Enable IPv6 Proxy NDP for the given address AND advertise to router.
 
-        This does THREE critical things:
-        1. Enables Proxy NDP - kernel responds to neighbor discovery for this IPv6
-        2. Enables global proxy_ndp sysctl settings
-        3. Sends Neighbor Advertisement to router - announces the IPv6 address
+        This does FIVE critical things to ensure reliable IPv6 connectivity:
+        1. Enables global proxy_ndp sysctl settings
+        2. Adds proxy NDP entry for specific IPv6
+        3. Sends Neighbor Advertisement to router
+        4. Adds static IPv6 route for the address
+        5. Enables IPv6 forwarding with connection tracking
 
-        Without step 3, the router won't know about this IPv6 and can't route to it!
+        This comprehensive setup prevents common IPv6 packet drop issues.
 
         Args:
             ipv6: IPv6 address to enable proxy NDP for
@@ -1091,9 +1125,15 @@ class DHCPv6Manager:
                 check=True,
                 capture_output=True,
             )
-            self.logger.debug(f"Enabled global proxy_ndp for {self.interface}")
+            # Additional packet handling settings
+            subprocess.run(
+                [cfg.CMD_SYSCTL, "-w", f"net.ipv6.conf.{self.interface}.forwarding=1"],
+                check=True,
+                capture_output=True,
+            )
+            self.logger.debug(f"Enabled proxy_ndp and forwarding for {self.interface}")
         except subprocess.CalledProcessError as e:
-            self.logger.warning(f"Failed to enable global proxy_ndp: {e}")
+            self.logger.warning(f"Failed to enable proxy_ndp sysctls: {e}")
 
         # Step 2: Add proxy NDP entry for this specific IPv6
         try:
@@ -1120,25 +1160,122 @@ class DHCPv6Manager:
                 self.logger.error(f"Failed to enable Proxy NDP for {ipv6}: {e}")
                 return False
 
-        # Step 3: CRITICAL - Send Neighbor Advertisement to router!
-        # This announces the IPv6 address so the router knows we have it
-        # Without this, the router won't route traffic to this IPv6
+        # Step 3: Send multiple Neighbor Advertisements to ensure router learns the address
+        # CRITICAL: This announces the IPv6 address so the router knows we have it
         try:
-            # Send ping6 to all-nodes multicast to trigger neighbor discovery
-            # This makes the router learn about our IPv6 address
             self.logger.info(
                 f"Advertising IPv6 {ipv6} to router via Neighbor Advertisement..."
             )
+
+            # Method 1: Multicast to all-nodes (ff02::1)
             subprocess.run(
                 ["ping6", "-c", "2", "-I", self.interface, "ff02::1"],
                 capture_output=True,
                 timeout=3,
             )
+
+            # Method 2: Try to ping the default gateway directly if available
+            try:
+                # Get default IPv6 route
+                result = subprocess.run(
+                    [cfg.CMD_IP, "-6", "route", "show", "default"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                if result.returncode == 0 and result.stdout:
+                    # Extract gateway address (format: "default via 2001:db8::1 dev eth0")
+                    gateway = None
+                    for line in result.stdout.split('\n'):
+                        if 'via' in line:
+                            parts = line.split()
+                            via_index = parts.index('via')
+                            if via_index + 1 < len(parts):
+                                gateway = parts[via_index + 1]
+                                break
+
+                    if gateway:
+                        self.logger.debug(f"Sending NA to default gateway {gateway}")
+                        subprocess.run(
+                            ["ping6", "-c", "1", "-I", self.interface, gateway],
+                            capture_output=True,
+                            timeout=2,
+                        )
+            except Exception as e:
+                self.logger.debug(f"Could not ping default gateway: {e}")
+
             self.logger.info(f"✓ Advertised IPv6 {ipv6} to router")
+
         except subprocess.TimeoutExpired:
             self.logger.debug("Neighbor Advertisement ping timeout (expected)")
         except Exception as e:
             self.logger.warning(f"Failed to send Neighbor Advertisement: {e}")
+
+        # Step 4: Add explicit route for this IPv6 address (helps with routing)
+        try:
+            # Add route to local table to ensure packets are delivered
+            subprocess.run(
+                [
+                    cfg.CMD_IP,
+                    "-6",
+                    "route",
+                    "add",
+                    "local",
+                    ipv6,
+                    "dev",
+                    self.interface,
+                ],
+                capture_output=True,
+            )
+            self.logger.debug(f"Added local IPv6 route for {ipv6}")
+        except subprocess.CalledProcessError as e:
+            # Route may already exist
+            if "File exists" not in str(e.stderr):
+                self.logger.debug(f"Could not add IPv6 local route: {e}")
+
+        # Step 5: Ensure IPv6 firewall allows this address
+        try:
+            # Allow INPUT for this specific IPv6
+            subprocess.run(
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "INPUT",
+                    "-d",
+                    ipv6,
+                    "-j",
+                    "ACCEPT",
+                ],
+                capture_output=True,
+            )
+            # Allow FORWARD for this specific IPv6
+            subprocess.run(
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "FORWARD",
+                    "-d",
+                    ipv6,
+                    "-j",
+                    "ACCEPT",
+                ],
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    cfg.CMD_IP6TABLES,
+                    "-I",
+                    "FORWARD",
+                    "-s",
+                    ipv6,
+                    "-j",
+                    "ACCEPT",
+                ],
+                capture_output=True,
+            )
+            self.logger.debug(f"Added ip6tables rules for {ipv6}")
+        except Exception as e:
+            self.logger.debug(f"Could not add ip6tables rules: {e}")
 
         return True
 
@@ -3378,32 +3515,20 @@ class GatewayService:
                             and device.ipv4_address
                             and device.ipv6_address
                         ):
-                            # CRITICAL: Auto-detect device's actual HTTP port!
-                            # Devices may run HTTP on port 80, 5000, 8080, 8000, etc.
-                            detected_http_port = self._detect_device_http_port(device.ipv4_address)
-
-                            # Store detected port for this device
-                            self.device_http_ports[mac] = detected_http_port
-
-                            # Create dynamic port map based on detected HTTP port
-                            # Always forward telnet (23), but use detected port for HTTP
-                            dynamic_port_map = {
-                                2323: 23,  # Telnet (fixed)
-                                8080: detected_http_port,  # HTTP (auto-detected!)
-                            }
-
+                            # Use STANDARD port mapping from config
+                            # This provides transparent IPv6 access on standard ports!
+                            # Example: http://[2620:...:85c]:80 → 192.168.1.x:80
                             self.logger.info(
-                                f"Using dynamic port map for {mac}: "
-                                f"Telnet 2323→23, HTTP 8080→{detected_http_port}"
+                                f"Starting transparent IPv6→IPv4 proxies for {mac} on standard ports"
                             )
 
-                            # Start proxies with DYNAMIC PORT MAP!
-                            # Pass device's IPv6 address so proxy binds to it specifically
+                            # Start proxies with port map from config
+                            # Binds to device's specific IPv6 address to avoid conflicts
                             self.proxy_manager.start_proxy_for_device(
                                 mac=mac,
                                 device_ipv4=device.ipv4_address,
                                 device_ipv6=device.ipv6_address,  # Device's unique IPv6 address
-                                port_map=dynamic_port_map,  # DYNAMIC ports!
+                                port_map=cfg.IPV6_PROXY_PORT_FORWARDS,  # Standard ports!
                             )
                 else:
                     device.status = "failed"
