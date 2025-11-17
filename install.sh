@@ -720,6 +720,73 @@ EOF
 
 echo -e "${GREEN}✓ DHCP configuration created at $CONFIG_DIR/dhcp-config.uci${NC}\n"
 
+# Step 6.4: Ensure DHCP server is running (even in default mode)
+echo -e "${YELLOW}Step 6.4: Ensuring DHCP server is configured...${NC}"
+
+# CRITICAL FIX: Always ensure dnsmasq is running with basic DHCP, even without --apply-network
+# This prevents the "device cannot get IP" issue when running ./install.sh without flags
+if command -v uci >/dev/null 2>&1; then
+    echo -e "${BLUE}- Checking DHCP configuration...${NC}"
+
+    # Check if dhcp.lan section exists
+    if uci show dhcp.lan >/dev/null 2>&1; then
+        # Get current DHCP ignore setting
+        DHCP_IGNORE=$(uci get dhcp.lan.ignore 2>/dev/null || echo "0")
+
+        if [ "$DHCP_IGNORE" = "1" ]; then
+            echo -e "${YELLOW}  DHCP is currently disabled - enabling it...${NC}"
+            uci set dhcp.lan.ignore='0'
+            uci commit dhcp
+            echo -e "${GREEN}  ✓ DHCP enabled${NC}"
+        else
+            echo -e "${GREEN}  ✓ DHCP is already enabled${NC}"
+        fi
+
+        # Ensure basic DHCP settings are present
+        uci set dhcp.lan.interface='lan' 2>/dev/null || true
+        uci set dhcp.lan.start='100' 2>/dev/null || true
+        uci set dhcp.lan.limit='150' 2>/dev/null || true
+        uci set dhcp.lan.leasetime='12h' 2>/dev/null || true
+        uci commit dhcp 2>/dev/null || true
+        echo -e "${GREEN}  ✓ Basic DHCP settings verified${NC}"
+    else
+        echo -e "${YELLOW}  ⚠ No dhcp.lan config found${NC}"
+        echo -e "${YELLOW}    Will be configured when you run with --apply-network${NC}"
+    fi
+
+    # Verify dnsmasq is running
+    echo -e "${BLUE}- Checking dnsmasq service...${NC}"
+    if ! ps | grep -v grep | grep -q dnsmasq; then
+        echo -e "${YELLOW}  dnsmasq is not running - starting it...${NC}"
+        /etc/init.d/dnsmasq start 2>/dev/null || {
+            echo -e "${RED}  Failed to start via init.d, trying direct start...${NC}"
+            dnsmasq 2>/dev/null &
+        }
+        sleep 2
+
+        if ps | grep -v grep | grep -q dnsmasq; then
+            echo -e "${GREEN}  ✓ dnsmasq is now running${NC}"
+        else
+            echo -e "${RED}  ✗ WARNING: Failed to start dnsmasq${NC}"
+            echo -e "${YELLOW}    You may need to manually start it: /etc/init.d/dnsmasq start${NC}"
+        fi
+    else
+        echo -e "${GREEN}  ✓ dnsmasq is already running${NC}"
+    fi
+
+    # Show DHCP status
+    if [ -f /var/etc/dnsmasq.conf.cfg01411c ]; then
+        if grep -q "dhcp-range" /var/etc/dnsmasq.conf.cfg01411c 2>/dev/null; then
+            DHCP_RANGE=$(grep "dhcp-range" /var/etc/dnsmasq.conf.cfg01411c | head -1)
+            echo -e "${GREEN}  ✓ DHCP range configured: ${DHCP_RANGE}${NC}"
+        fi
+    fi
+else
+    echo -e "${YELLOW}  UCI not available (not OpenWrt?) - skipping DHCP check${NC}"
+fi
+
+echo -e "${GREEN}✓ DHCP server verification complete${NC}\n"
+
 # Step 6.5: Create firewall configuration and enable IPv6 traffic
 echo -e "${YELLOW}Step 6.5: Creating firewall configuration...${NC}"
 cat > "$CONFIG_DIR/firewall-config.uci" << 'EOF'
