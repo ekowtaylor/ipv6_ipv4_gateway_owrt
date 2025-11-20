@@ -9,6 +9,9 @@
 
 set -e  # Exit on error
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 SERVICE_NAME="ipv4-ipv6-gateway"
 INSTALL_DIR="/opt/ipv4-ipv6-gateway"
 CONFIG_DIR="/etc/ipv4-ipv6-gateway"
@@ -68,6 +71,18 @@ fi
 
 # Verify required files exist
 echo "Checking required files..."
+echo "Script directory: $SCRIPT_DIR"
+echo ""
+
+# Change to script directory to find files
+cd "$SCRIPT_DIR" || {
+    echo "ERROR: Cannot change to script directory: $SCRIPT_DIR"
+    exit 1
+}
+
+echo "Working directory: $(pwd)"
+echo ""
+
 REQUIRED_FILES="ipv4_ipv6_gateway.py gateway_config.py gateway-status-direct.sh gateway-devices-direct.sh"
 
 MISSING_FILES=""
@@ -80,16 +95,15 @@ done
 if [ -n "$MISSING_FILES" ]; then
     echo "ERROR: Required files missing:$MISSING_FILES"
     echo ""
-    echo "Please copy ALL required files to the current directory first:"
+    echo "Files in script directory:"
+    ls -lh *.py *.sh 2>/dev/null || ls -lh
     echo ""
-    echo "  scp install.sh \\"
-    echo "      ipv4_ipv6_gateway.py \\"
-    echo "      gateway_config.py \\"
-    echo "      gateway-status-direct.sh \\"
-    echo "      gateway-devices-direct.sh \\"
-    echo "      root@<router-ip>:/tmp/"
+    echo "Please ensure the following files exist in the same directory as install.sh:"
+    echo "  - ipv4_ipv6_gateway.py"
+    echo "  - gateway_config.py"
+    echo "  - gateway-status-direct.sh"
+    echo "  - gateway-devices-direct.sh"
     echo ""
-    echo "Then run this script from /tmp/"
     exit 1
 fi
 

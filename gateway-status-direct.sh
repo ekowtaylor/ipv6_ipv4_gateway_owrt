@@ -1,11 +1,11 @@
 #!/bin/sh
-# Simplified Gateway Status - Single Device Mode (Direct file read - no API)
-# Reads current device state from JSON without API server
-# Perfect for console/KVM access or when network is unavailable
+# gateway-status-direct.sh — Show full gateway status (single device mode)
+# Works even when API is down - reads state file and checks process directly
 
 set -e
 
-STATE_FILE="/etc/ipv4-ipv6-gateway/current_device.json"
+# State file (single device mode)
+STATE_FILE="/etc/ipv4-ipv6-gateway/device.json"
 LOG_FILE="/var/log/ipv4-ipv6-gateway.log"
 
 echo "=========================================="

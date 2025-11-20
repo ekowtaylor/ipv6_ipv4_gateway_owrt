@@ -1,11 +1,11 @@
 #!/bin/sh
-# Simplified Gateway Device Info - Single Device Mode (Direct file read - no API)
-# Displays current device configuration from JSON
-# Perfect for console/KVM access or when network is unavailable
+# gateway-devices-direct.sh — Show device info (single device mode)
+# Works even when API is down - reads state file directly
 
 set -e
 
-STATE_FILE="/etc/ipv4-ipv6-gateway/current_device.json"
+# State file (single device mode)
+STATE_FILE="/etc/ipv4-ipv6-gateway/device.json"
 
 echo "=========================================="
 echo "DEVICE CONFIGURATION (Single Device Mode)"
@@ -13,14 +13,14 @@ echo "=========================================="
 echo ""
 
 if [ -f "$STATE_FILE" ]; then
-    # Parse JSON and display
+    # Parse JSON and display (field names match Python Device dataclass)
     MAC=$(grep -o '"mac_address": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4)
-    LAN_IP=$(grep -o '"ipv4_address": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4)
-    WAN_IPV4=$(grep -o '"ipv4_wan_address": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4 | head -1)
-    WAN_IPV6=$(grep -o '"ipv6_address": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4 | head -1)
+    LAN_IP=$(grep -o '"lan_ipv4": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4)
+    WAN_IPV4=$(grep -o '"wan_ipv4": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4 | head -1)
+    WAN_IPV6=$(grep -o '"wan_ipv6": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4 | head -1)
     STATUS=$(grep -o '"status": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4)
     DISCOVERED=$(grep -o '"discovered_at": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4)
-    LAST_SEEN=$(grep -o '"last_seen": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4)
+    LAST_UPDATED=$(grep -o '"last_updated": "[^"]*"' "$STATE_FILE" | cut -d'"' -f4)
 
     echo "Device Information:"
     echo "-------------------"
@@ -48,7 +48,7 @@ if [ -f "$STATE_FILE" ]; then
     echo "Timeline:"
     echo "-------------------"
     echo "  Discovered:     $DISCOVERED"
-    echo "  Last Seen:      $LAST_SEEN"
+    echo "  Last Updated:   $LAST_UPDATED"
 
 else
     echo "No device configured yet"

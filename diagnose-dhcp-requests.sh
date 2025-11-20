@@ -15,15 +15,15 @@ printf "${YELLOW}DHCP Request Diagnostic${NC}\n"
 printf "${YELLOW}========================================${NC}\n"
 printf "\n"
 
-# Check devices.json
-printf "${BLUE}1. Checking devices.json...${NC}\n"
-if [ -f "/etc/ipv4-ipv6-gateway/devices.json" ]; then
-    printf "${GREEN}✓ devices.json exists${NC}\n"
+# Check device.json
+printf "${BLUE}1. Checking device.json...${NC}\n"
+if [ -f "/etc/ipv4-ipv6-gateway/device.json" ]; then
+    printf "${GREEN}✓ device.json exists${NC}\n"
     printf "\n"
-    cat /etc/ipv4-ipv6-gateway/devices.json | python3 -m json.tool
+    cat /etc/ipv4-ipv6-gateway/device.json | python3 -m json.tool
     printf "\n"
 else
-    printf "${RED}✗ devices.json not found${NC}\n"
+    printf "${RED}✗ device.json not found${NC}\n"
 fi
 
 # Check gateway logs for DHCP
@@ -104,10 +104,10 @@ printf "${YELLOW}========================================${NC}\n"
 printf "${YELLOW}Summary & Recommendations${NC}\n"
 printf "${YELLOW}========================================${NC}\n"
 
-# Parse devices.json to check if device has IPv4 WAN
-if [ -f "/etc/ipv4-ipv6-gateway/devices.json" ]; then
-    HAS_IPV4_WAN=$(cat /etc/ipv4-ipv6-gateway/devices.json | python3 -c "import sys, json; d=json.load(sys.stdin); print('yes' if any(v.get('ipv4_wan_address') for v in d.values()) else 'no')" 2>/dev/null)
-    HAS_IPV6=$(cat /etc/ipv4-ipv6-gateway/devices.json | python3 -c "import sys, json; d=json.load(sys.stdin); print('yes' if any(v.get('ipv6_address') for v in d.values()) else 'no')" 2>/dev/null)
+# Parse device.json to check if device has IPv4 WAN
+if [ -f "/etc/ipv4-ipv6-gateway/device.json" ]; then
+    HAS_IPV4_WAN=$(cat /etc/ipv4-ipv6-gateway/device.json | python3 -c "import sys, json; d=json.load(sys.stdin); print('yes' if d.get('wan_ipv4') and d.get('wan_ipv4') != 'null' else 'no')" 2>/dev/null)
+    HAS_IPV6=$(cat /etc/ipv4-ipv6-gateway/device.json | python3 -c "import sys, json; d=json.load(sys.stdin); print('yes' if d.get('wan_ipv6') and d.get('wan_ipv6') != 'null' else 'no')" 2>/dev/null)
 
     if [ "$HAS_IPV4_WAN" = "yes" ]; then
         printf "${GREEN}✓ Device has WAN IPv4 address${NC}\n"

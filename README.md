@@ -42,28 +42,32 @@ Perfect for scenarios where:
 - **Hardware**: NanoPi R5C (or similar dual-NIC router)
 - **OS**: OpenWrt with Python 3.7+
 - **Network**: Dual-stack network with MAC-based firewall
+- **Git**: Installed on your router (`opkg install git`)
 
 ### One-Command Installation
 
 ```bash
-# Copy files to router
-scp ipv4_ipv6_gateway.py gateway_config.py \
-    gateway-status-direct.sh gateway-devices-direct.sh install.sh \
-    root@<router-ip>:/tmp/
-
-# SSH and install
+# SSH to your router
 ssh root@<router-ip>
+
+# Clone the repository
 cd /tmp
-chmod +x install.sh
+git clone https://github.com/your-username/ipv6_ipv4_gateway_owrt.git
+cd ipv6_ipv4_gateway_owrt
+
+# Run full automated install
 ./install.sh --full-auto
 ```
 
 **What this does:**
 1. ✅ Installs dependencies (Python, odhcp6c, udhcpc, etc.)
 2. ✅ Installs simplified gateway service
-3. ✅ Creates dual-stack network configuration
-4. ✅ Starts the service
-5. ✅ Installs helper commands: `gateway-status`, `gateway-device`
+3. ✅ Creates dual-stack network configuration (eth0=WAN, eth1=LAN)
+4. ✅ Sets up DHCP server on LAN
+5. ✅ Enables IP forwarding (IPv4 + IPv6)
+6. ✅ Configures firewall with NAT
+7. ✅ Starts the service automatically
+8. ✅ Installs helper commands: `gateway-status`, `gateway-device`
 
 ### Verify Installation
 

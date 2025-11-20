@@ -1,10 +1,10 @@
-#!/bin/sh
+#!/bin/bash
 #
 # IPv6 Connectivity Diagnostic Script
-# Diagnoses why IPv6 address is unreachable
+# Tests IPv6 functionality from gateway and devices
 #
-
-RED='\033[0;31m'
+# Usage: ./diagnose-ipv6-connectivity.sh [target_ipv6_address]
+#
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
