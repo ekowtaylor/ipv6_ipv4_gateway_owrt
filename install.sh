@@ -70,13 +70,29 @@ fi
 echo "Checking required files..."
 REQUIRED_FILES="ipv4_ipv6_gateway.py gateway_config.py gateway-status-direct.sh gateway-devices-direct.sh"
 
+MISSING_FILES=""
 for file in $REQUIRED_FILES; do
     if [ ! -f "$file" ]; then
-        echo "ERROR: Required file missing: $file"
-        echo "Please run this script from the directory containing all gateway files"
-        exit 1
+        MISSING_FILES="$MISSING_FILES $file"
     fi
 done
+
+if [ -n "$MISSING_FILES" ]; then
+    echo "ERROR: Required files missing:$MISSING_FILES"
+    echo ""
+    echo "Please copy ALL required files to the current directory first:"
+    echo ""
+    echo "  scp install.sh \\"
+    echo "      ipv4_ipv6_gateway.py \\"
+    echo "      gateway_config.py \\"
+    echo "      gateway-status-direct.sh \\"
+    echo "      gateway-devices-direct.sh \\"
+    echo "      root@<router-ip>:/tmp/"
+    echo ""
+    echo "Then run this script from /tmp/"
+    exit 1
+fi
+
 echo "✓ All required files found"
 echo ""
 
@@ -240,7 +256,11 @@ echo ""
 if [ "$APPLY_NETWORK" = "true" ]; then
     echo "Applying network configuration..."
 
-    # Configure eth1 (LAN)
+    # Backup current network config
+    echo "  Backing up current network config..."
+    cp /etc/config/network "$CONFIG_DIR/network.backup" 2>/dev/null || true
+
+    # Configure eth1 (LAN) - Static IP with DHCP server
     uci set network.lan=interface
     uci set network.lan.device='eth1'
     uci set network.lan.proto='static'
@@ -258,16 +278,81 @@ if [ "$APPLY_NETWORK" = "true" ]; then
     uci set network.wan6.reqaddress='try'
     uci set network.wan6.reqprefix='auto'
 
-    # Commit and apply
+    # Commit network changes
     uci commit network
+
+    # Configure DHCP server on LAN (dnsmasq)
+    echo "  Configuring DHCP server on LAN..."
+    uci set dhcp.lan=dhcp
+    uci set dhcp.lan.interface='lan'
+    uci set dhcp.lan.start='100'
+    uci set dhcp.lan.limit='150'
+    uci set dhcp.lan.leasetime='12h'
+    uci set dhcp.lan.dhcpv6='server'
+    uci set dhcp.lan.ra='server'
+    uci commit dhcp
+
+    # Enable IP forwarding (required for gateway functionality)
+    echo "  Enabling IP forwarding..."
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+    echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
+
+    # Make forwarding persistent
+    cat >> /etc/sysctl.conf << 'SYSCTL_EOF'
+# Gateway IP forwarding (added by ipv4-ipv6-gateway installer)
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.forwarding=1
+SYSCTL_EOF
+
+    # Configure basic firewall rules
+    echo "  Configuring firewall..."
+
+    # Set up zones
+    uci set firewall.@zone[0]=zone
+    uci set firewall.@zone[0].name='lan'
+    uci set firewall.@zone[0].input='ACCEPT'
+    uci set firewall.@zone[0].output='ACCEPT'
+    uci set firewall.@zone[0].forward='ACCEPT'
+    uci set firewall.@zone[0].network='lan'
+
+    uci set firewall.@zone[1]=zone
+    uci set firewall.@zone[1].name='wan'
+    uci set firewall.@zone[1].input='REJECT'
+    uci set firewall.@zone[1].output='ACCEPT'
+    uci set firewall.@zone[1].forward='REJECT'
+    uci set firewall.@zone[1].masq='1'
+    uci set firewall.@zone[1].mtu_fix='1'
+    uci set firewall.@zone[1].network='wan wan6'
+
+    # Allow forwarding from LAN to WAN
+    uci set firewall.@forwarding[0]=forwarding
+    uci set firewall.@forwarding[0].src='lan'
+    uci set firewall.@forwarding[0].dest='wan'
+
+    uci commit firewall
+
+    # Restart services to apply changes
+    echo "  Restarting network services..."
     /etc/init.d/network restart
+    sleep 3
+    /etc/init.d/dnsmasq restart
+    sleep 2
+    /etc/init.d/firewall restart
+    sleep 2
 
     echo "✓ Network configuration applied"
+    echo "  - eth1 (LAN): 192.168.1.1/24 with DHCP server (100-250)"
+    echo "  - eth0 (WAN): DHCPv4 + DHCPv6 client"
+    echo "  - IP forwarding: Enabled"
+    echo "  - Firewall: Configured with NAT"
 else
     echo "Skipping network configuration (use --apply-network to enable)"
-    echo "Manual steps:"
+    echo "Manual steps required:"
     echo "  1. Configure eth1 as LAN: 192.168.1.1/24"
     echo "  2. Configure eth0 as WAN: DHCP + DHCPv6"
+    echo "  3. Set up DHCP server on eth1 (dnsmasq)"
+    echo "  4. Enable IP forwarding"
+    echo "  5. Configure firewall for NAT"
 fi
 echo ""
 

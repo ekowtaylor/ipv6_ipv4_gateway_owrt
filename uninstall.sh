@@ -95,8 +95,11 @@ echo ""
 if [ "$RESTORE_NETWORK" -eq 1 ]; then
     echo "Step 3: Restoring network configuration..."
 
-    # Use factory config if available
-    if [ -f "/rom/etc/config/network" ]; then
+    # Restore from backup if available
+    if [ -f "$CONFIG_DIR/network.backup" ]; then
+        echo "- Restoring network from backup..."
+        cp "$CONFIG_DIR/network.backup" /etc/config/network
+    elif [ -f "/rom/etc/config/network" ]; then
         echo "- Restoring factory network config..."
         cp /rom/etc/config/network /etc/config/network
     else
@@ -124,11 +127,86 @@ config interface 'wan6'
 EOF
     fi
 
-    echo "- Restarting network..."
+    # Restore default DHCP config
+    echo "- Restoring default DHCP config..."
+    uci delete dhcp.lan 2>/dev/null || true
+    uci set dhcp.lan=dhcp
+    uci set dhcp.lan.interface='lan'
+    uci set dhcp.lan.start='100'
+    uci set dhcp.lan.limit='150'
+    uci set dhcp.lan.leasetime='12h'
+    uci commit dhcp
+
+    # Restore default firewall config
+    echo "- Restoring default firewall config..."
+    if [ -f "/rom/etc/config/firewall" ]; then
+        cp /rom/etc/config/firewall /etc/config/firewall
+    else
+        # Create minimal firewall config
+        cat > /etc/config/firewall << 'EOF'
+config defaults
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option synflood_protect '1'
+
+config zone
+	option name 'lan'
+	option input 'ACCEPT'
+	option output 'ACCEPT'
+	option forward 'ACCEPT'
+	option network 'lan'
+
+config zone
+	option name 'wan'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	option masq '1'
+	option mtu_fix '1'
+	option network 'wan wan6'
+
+config forwarding
+	option src 'lan'
+	option dest 'wan'
+EOF
+    fi
+    uci commit firewall
+
+    # Remove our sysctl entries
+    echo "- Cleaning up sysctl config..."
+    if [ -f /etc/sysctl.conf ]; then
+        sed -i '/# Gateway IP forwarding/d' /etc/sysctl.conf
+        sed -i '/net.ipv4.ip_forward=1/d' /etc/sysctl.conf
+        sed -i '/net.ipv6.conf.all.forwarding=1/d' /etc/sysctl.conf
+    fi
+
+    # Disable IP forwarding
+    echo "- Disabling IP forwarding..."
+    echo 0 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+    echo 0 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || true
+
+    # Clean up iptables rules added by gateway
+    echo "- Cleaning up iptables rules..."
+    iptables -t nat -F PREROUTING 2>/dev/null || true
+    iptables -F FORWARD 2>/dev/null || true
+    ip6tables -t nat -F POSTROUTING 2>/dev/null || true
+
+    # Restart all network services
+    echo "- Restarting network services..."
+    /etc/init.d/firewall restart 2>/dev/null || true
+    sleep 2
+    /etc/init.d/dnsmasq restart 2>/dev/null || true
+    sleep 2
     /etc/init.d/network restart 2>/dev/null || true
     sleep 3
 
-    echo "✓ Network restored"
+    echo "✓ Network fully restored"
+    echo "  - Network config: Restored to factory defaults"
+    echo "  - DHCP server: Restored to defaults"
+    echo "  - Firewall: Restored to defaults"
+    echo "  - IP forwarding: Disabled"
+    echo "  - NAT rules: Cleaned"
 else
     echo "Step 3: Skipping network restore (use --restore-network to revert)"
 fi
