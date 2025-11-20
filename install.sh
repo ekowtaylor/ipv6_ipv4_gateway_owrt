@@ -62,7 +62,7 @@ echo "========================================="
 echo ""
 
 # Check if running as root
-if [ "$EUID" -ne 0 ]; then
+if [ "$(id -u)" -ne 0 ]; then
     echo "ERROR: Please run as root"
     exit 1
 fi

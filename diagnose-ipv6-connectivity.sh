@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # IPv6 Connectivity Diagnostic Script
 # Diagnoses why IPv6 address is unreachable
@@ -10,10 +10,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-echo -e "${YELLOW}========================================${NC}"
-echo -e "${YELLOW}IPv6 Connectivity Diagnostic${NC}"
-echo -e "${YELLOW}========================================${NC}"
-echo ""
+printf "${YELLOW}========================================${NC}\n"
+printf "${YELLOW}IPv6 Connectivity Diagnostic${NC}\n"
+printf "${YELLOW}========================================${NC}\n"
+printf "\n"
 
 # Get the target IPv6 from command line or use default
 TARGET_IPV6="${1:-2620:10d:c050:100:46b7:d0ff:fea6:64fc}"

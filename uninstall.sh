@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # uninstall.sh — Simplified uninstaller for IPv4↔IPv6 Gateway (Single Device Mode)
 # Safely uninstall the gateway service and clean up
@@ -38,7 +38,7 @@ echo "========================================="
 echo ""
 
 # Check root
-if [ "$EUID" -ne 0 ]; then
+if [ "$(id -u)" -ne 0 ]; then
     echo "ERROR: This script must be run as root"
     exit 1
 fi

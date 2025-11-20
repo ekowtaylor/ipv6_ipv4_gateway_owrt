@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # verify.sh — Health check for IPv4↔IPv6 Gateway deployment
 #
@@ -14,6 +14,7 @@ LOG_FILE="/var/log/${SERVICE_NAME}.log"
 INIT_SCRIPT="/etc/init.d/${SERVICE_NAME}"
 API_BASE="http://127.0.0.1:5050"
 
+# Color codes (use printf instead of echo -e for portability)
 YELLOW='\033[1;33m'
 GREEN='\033[0;32m'
 RED='\033[0;31m'
