@@ -212,10 +212,25 @@ echo ""
 
 # Install helper scripts
 echo "Installing helper scripts..."
-cp gateway-status-direct.sh /usr/bin/gateway-status
-cp gateway-devices-direct.sh /usr/bin/gateway-device
+
+# Use explicit paths from SCRIPT_DIR
+if [ ! -f "$SCRIPT_DIR/gateway-status-direct.sh" ]; then
+    echo "ERROR: gateway-status-direct.sh not found in $SCRIPT_DIR"
+    ls -lh "$SCRIPT_DIR"/*.sh
+    exit 1
+fi
+
+if [ ! -f "$SCRIPT_DIR/gateway-devices-direct.sh" ]; then
+    echo "ERROR: gateway-devices-direct.sh not found in $SCRIPT_DIR"
+    ls -lh "$SCRIPT_DIR"/*.sh
+    exit 1
+fi
+
+cp "$SCRIPT_DIR/gateway-status-direct.sh" /usr/bin/gateway-status
+cp "$SCRIPT_DIR/gateway-devices-direct.sh" /usr/bin/gateway-device
 chmod +x /usr/bin/gateway-status
 chmod +x /usr/bin/gateway-device
+
 echo "✓ Installed: gateway-status, gateway-device"
 echo ""
 
