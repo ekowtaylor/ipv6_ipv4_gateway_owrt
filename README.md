@@ -1,4 +1,4 @@
-# IPv4↔IPv6 Gateway - Single Device Mode
+# IPv4↔IPv6 Gateway - Single Device Mode (ekowtaylor)
 
 **Simplified dual-stack gateway for NanoPi R5C running OpenWrt**
 
