@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Simplified Installation Script for IPv4↔IPv6 Gateway (Single Device Mode)
 # Installs Python service WITHOUT HTTP API server - uses direct scripts only
 #
@@ -8,7 +8,6 @@
 #
 
 set -e  # Exit on error
-set -u  # Exit on unbound variable
 
 SERVICE_NAME="ipv4-ipv6-gateway"
 INSTALL_DIR="/opt/ipv4-ipv6-gateway"
@@ -16,24 +15,24 @@ CONFIG_DIR="/etc/ipv4-ipv6-gateway"
 LOG_DIR="/var/log"
 
 # Parse command-line arguments
-AUTO_START=false
-APPLY_NETWORK=false
-FULL_AUTO=false
+AUTO_START="false"
+APPLY_NETWORK="false"
+FULL_AUTO="false"
 
-for arg in "$@"; do
-    case $arg in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --auto-start)
-            AUTO_START=true
+            AUTO_START="true"
             shift
             ;;
         --apply-network)
-            APPLY_NETWORK=true
+            APPLY_NETWORK="true"
             shift
             ;;
         --full-auto)
-            AUTO_START=true
-            APPLY_NETWORK=true
-            FULL_AUTO=true
+            AUTO_START="true"
+            APPLY_NETWORK="true"
+            FULL_AUTO="true"
             shift
             ;;
         --help)
@@ -49,7 +48,7 @@ for arg in "$@"; do
             exit 0
             ;;
         *)
-            echo "Unknown option: $arg"
+            echo "Unknown option: $1"
             echo "Use --help for usage information"
             exit 1
             ;;
@@ -69,14 +68,9 @@ fi
 
 # Verify required files exist
 echo "Checking required files..."
-REQUIRED_FILES=(
-    "ipv4_ipv6_gateway.py"
-    "gateway_config.py"
-    "gateway-status-direct.sh"
-    "gateway-devices-direct.sh"
-)
+REQUIRED_FILES="ipv4_ipv6_gateway.py gateway_config.py gateway-status-direct.sh gateway-devices-direct.sh"
 
-for file in "${REQUIRED_FILES[@]}"; do
+for file in $REQUIRED_FILES; do
     if [ ! -f "$file" ]; then
         echo "ERROR: Required file missing: $file"
         echo "Please run this script from the directory containing all gateway files"
@@ -169,7 +163,7 @@ echo "✓ Service enabled (will start on boot)"
 echo ""
 
 # Create network configuration
-if [ "$APPLY_NETWORK" = true ]; then
+if [ "$APPLY_NETWORK" = "true" ]; then
     echo "Applying network configuration..."
 
     # Configure eth1 (LAN)
@@ -204,7 +198,7 @@ fi
 echo ""
 
 # Start service
-if [ "$AUTO_START" = true ]; then
+if [ "$AUTO_START" = "true" ]; then
     echo "Starting service..."
     /etc/init.d/$SERVICE_NAME start
     sleep 2

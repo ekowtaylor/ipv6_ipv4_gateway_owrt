@@ -23,9 +23,9 @@ NC='\033[0m' # No Color
 
 set -e
 
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}IPv4↔IPv6 Gateway Verification Script${NC}"
-echo -e "${GREEN}========================================${NC}\n"
+printf "${GREEN}========================================${NC}\n"
+printf "${GREEN}IPv4↔IPv6 Gateway Verification Script${NC}\n"
+printf "${GREEN}========================================${NC}\n\n"
 
 # Detect init system
 if command -v systemctl >/dev/null 2>&1; then
@@ -33,7 +33,7 @@ if command -v systemctl >/dev/null 2>&1; then
 else
     INIT_SYSTEM="initd"
 fi
-echo -e "${BLUE}Detected init system: ${INIT_SYSTEM}${NC}\n"
+printf "${BLUE}Detected init system: ${INIT_SYSTEM}${NC}\n\n"
 
 http_get() {
     URL="$1"
@@ -55,89 +55,89 @@ http_get() {
 }
 
 # 1. Service status
-echo -e "${YELLOW}1) Service status${NC}"
+printf "${YELLOW}1) Service status${NC}\n"
 
 if [ "$INIT_SYSTEM" = "systemd" ] && command -v systemctl >/dev/null 2>&1; then
     if systemctl list-units --type=service 2>/dev/null | grep -q "$SERVICE_NAME.service"; then
-        echo -e "${BLUE}- systemd status:${NC}"
+        printf "${BLUE}- systemd status:${NC}\n"
         systemctl is-active "$SERVICE_NAME" && \
-            echo -e "${GREEN}  -> Service is active (systemd)${NC}" || \
-            echo -e "${RED}  -> Service is NOT active (systemd)${NC}"
+            printf "${GREEN}  -> Service is active (systemd)${NC}\n" || \
+            printf "${RED}  -> Service is NOT active (systemd)${NC}\n"
         echo ""
     else
-        echo -e "${YELLOW}  -> systemd unit not found for ${SERVICE_NAME}${NC}"
+        printf "${YELLOW}  -> systemd unit not found for ${SERVICE_NAME}${NC}\n"
     fi
 fi
 
 if [ -x "$INIT_SCRIPT" ]; then
-    echo -e "${BLUE}- init.d status:${NC}"
+    printf "${BLUE}- init.d status:${NC}\n"
     "$INIT_SCRIPT" status || true
 else
-    echo -e "${YELLOW}  -> /etc/init.d/${SERVICE_NAME} not found${NC}"
+    printf "${YELLOW}  -> /etc/init.d/${SERVICE_NAME} not found${NC}\n"
 fi
 echo ""
 
 # 2. Process check
-echo -e "${YELLOW}2) Process check${NC}"
+printf "${YELLOW}2) Process check${NC}\n"
 if pgrep -f "ipv4_ipv6_gateway.py" >/dev/null 2>&1; then
     PIDS="$(pgrep -f "ipv4_ipv6_gateway.py" | tr '\n' ' ')"
-    echo -e "${GREEN}  -> ipv4_ipv6_gateway.py running (PID(s): ${PIDS})${NC}"
+    printf "${GREEN}  -> ipv4_ipv6_gateway.py running (PID(s): ${PIDS})${NC}\n"
 else
-    echo -e "${RED}  -> ipv4_ipv6_gateway.py process NOT found${NC}"
+    printf "${RED}  -> ipv4_ipv6_gateway.py process NOT found${NC}\n"
 fi
 echo ""
 
 # 3. Device state (direct check - works without API)
-echo -e "${YELLOW}3) Device state check (single-device mode)${NC}"
+printf "${YELLOW}3) Device state check (single-device mode)${NC}\n"
 DEVICE_STATE="/etc/ipv4-ipv6-gateway/device.json"
 
 if [ -f "$DEVICE_STATE" ]; then
-    echo -e "${BLUE}- Device configuration:${NC}"
+    printf "${BLUE}- Device configuration:${NC}\n"
     cat "$DEVICE_STATE" | python3 -m json.tool 2>/dev/null || cat "$DEVICE_STATE"
-    echo -e "${GREEN}  -> Device state found${NC}"
+    printf "${GREEN}  -> Device state found${NC}\n"
 else
-    echo -e "${YELLOW}  -> No device configured yet ($DEVICE_STATE not found)${NC}"
+    printf "${YELLOW}  -> No device configured yet ($DEVICE_STATE not found)${NC}\n"
 fi
 echo ""
 
 # Optional API health check (if API is running)
-echo -e "${YELLOW}3b) API health check (optional in single-device mode)${NC}"
+printf "${YELLOW}3b) API health check (optional in single-device mode)${NC}\n"
 
-echo -e "${BLUE}- /health:${NC}"
+printf "${BLUE}- /health:${NC}\n"
 if OUTPUT=$(http_get "${API_BASE}/health" 2>/dev/null); then
     echo "$OUTPUT" | python3 -m json.tool 2>/dev/null || echo "$OUTPUT"
-    echo -e "${GREEN}  -> /health responded (API is running)${NC}"
+    printf "${GREEN}  -> /health responded (API is running)${NC}\n"
 else
-    echo -e "${YELLOW}  -> API not responding (this is OK in single-device mode)${NC}"
-    echo -e "${BLUE}  ℹ Use gateway-status-direct instead${NC}"
+    printf "${YELLOW}  -> API not responding (this is OK in single-device mode)${NC}\n"
+    printf "${BLUE}  ℹ Use gateway-status-direct instead${NC}\n"
 fi
 echo ""
 
 # 4. Logs
-echo -e "${YELLOW}4) Log tail (${LOG_FILE})${NC}"
+printf "${YELLOW}4) Log tail (${LOG_FILE})${NC}\n"
 if [ -f "$LOG_FILE" ]; then
-    echo -e "${BLUE}- Last 20 lines:${NC}"
+    printf "${BLUE}- Last 20 lines:${NC}\n"
     tail -n 20 "$LOG_FILE" || true
 else
-    echo -e "${YELLOW}  -> Log file not found at ${LOG_FILE}${NC}"
+    printf "${YELLOW}  -> Log file not found at ${LOG_FILE}${NC}\n"
 fi
 echo ""
 
 # 5. Network sanity
-echo -e "${YELLOW}5) Network sanity check${NC}"
+printf "${YELLOW}5) Network sanity check${NC}\n"
 
 if command -v ifstatus >/dev/null 2>&1; then
-    echo -e "${BLUE}- ifstatus lan:${NC}"
+    printf "${BLUE}- ifstatus lan:${NC}\n"
     ifstatus lan 2>/dev/null || echo "  (lan interface not defined)"
     echo ""
-    echo -e "${BLUE}- ifstatus wan:${NC}"
+    printf "${BLUE}- ifstatus wan:${NC}\n"
     ifstatus wan 2>/dev/null || echo "  (wan interface not defined)"
 else
-    echo -e "${BLUE}- ip -4 addr show:${NC}"
+    printf "${BLUE}- ip -4 addr show:${NC}\n"
     ip -4 addr show || true
 fi
 echo ""
 
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}Verification complete.${NC}"
-echo -e "${GREEN}========================================${NC}\n"
+printf "${GREEN}========================================${NC}\n"
+printf "${GREEN}Verification complete.${NC}\n"
+printf "${GREEN}========================================${NC}\n\n"
