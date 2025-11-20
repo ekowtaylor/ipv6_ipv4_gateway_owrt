@@ -226,10 +226,38 @@ if [ ! -f "$SCRIPT_DIR/gateway-devices-direct.sh" ]; then
     exit 1
 fi
 
-cp "$SCRIPT_DIR/gateway-status-direct.sh" /usr/bin/gateway-status
-cp "$SCRIPT_DIR/gateway-devices-direct.sh" /usr/bin/gateway-device
-chmod +x /usr/bin/gateway-status
-chmod +x /usr/bin/gateway-device
+# Copy scripts with error handling
+cp "$SCRIPT_DIR/gateway-status-direct.sh" /usr/bin/gateway-status || {
+    echo "ERROR: Failed to copy gateway-status-direct.sh to /usr/bin/gateway-status"
+    exit 1
+}
+
+cp "$SCRIPT_DIR/gateway-devices-direct.sh" /usr/bin/gateway-device || {
+    echo "ERROR: Failed to copy gateway-devices-direct.sh to /usr/bin/gateway-device"
+    exit 1
+}
+
+# Make scripts executable
+chmod +x /usr/bin/gateway-status || {
+    echo "ERROR: Failed to make gateway-status executable"
+    exit 1
+}
+
+chmod +x /usr/bin/gateway-device || {
+    echo "ERROR: Failed to make gateway-device executable"
+    exit 1
+}
+
+# Verify scripts are accessible
+if ! command -v gateway-status >/dev/null 2>&1; then
+    echo "ERROR: gateway-status command not accessible after installation"
+    exit 1
+fi
+
+if ! command -v gateway-device >/dev/null 2>&1; then
+    echo "ERROR: gateway-device command not accessible after installation"
+    exit 1
+fi
 
 echo "✓ Installed: gateway-status, gateway-device"
 echo ""
