@@ -61,9 +61,14 @@ PORT_FORWARDS = {
 
 # IPv6→IPv4 proxy ports (for IPv6-only networks)
 # Format: {ipv6_port: device_port}
+# NOTE: Ports chosen to avoid conflicts with OpenWrt services:
+#   - LuCI web interface: ports 80, 443
+#   - SSH: port 22
+#   - DNS: port 53
 IPV6_PROXY_PORTS = {
-    80: 80,  # HTTP (firewall allows)
-    23: 23,  # Telnet (firewall allows)
+    8080: 80,  # HTTP: [ipv6]:8080 → device:80 (avoids LuCI on port 80)
+    2323: 23,  # Telnet: [ipv6]:2323 → device:23
+    5000: 5000,  # Alt HTTP: [ipv6]:5000 → device:5000
 }
 
 # System commands
