@@ -83,11 +83,85 @@ echo ""
 # Install dependencies
 echo "Installing dependencies..."
 opkg update
-opkg install python3 python3-pip ip-full iptables kmod-ipt-nat kmod-nf-nat6
-opkg install odhcp6c  # DHCPv6 client
+
+# Install core dependencies (required)
+echo "Installing core dependencies..."
+opkg install python3 python3-pip ip-full iptables kmod-ipt-nat || {
+    echo "ERROR: Failed to install core dependencies"
+    exit 1
+}
+
+# Install DHCPv6 client (required for IPv6)
+echo "Installing DHCPv6 client..."
+opkg install odhcp6c || {
+    echo "WARNING: odhcp6c installation failed - IPv6 may not work"
+}
+
+# Install socat (required for IPv6 proxy)
+echo "Installing socat for IPv6 proxy..."
+opkg install socat || {
+    echo "WARNING: socat installation failed - IPv6 proxy will not work"
+}
+
 # Note: udhcpc is part of BusyBox and already included in OpenWrt
-opkg install socat    # For IPv6→IPv4 port forwarding
-echo "✓ Dependencies installed"
+echo "✓ udhcpc (DHCPv4 client) is pre-installed in BusyBox"
+
+# Install IPv6 NAT support (optional - try multiple package names)
+echo ""
+echo "Installing IPv6 NAT support (optional)..."
+IPV6_NAT_INSTALLED=false
+
+# Try different package names for IPv6 NAT (varies by OpenWrt version)
+for pkg in kmod-ipt-nat6 kmod-nf-nat6 ip6tables-mod-nat; do
+    echo "  Trying: $pkg"
+    if opkg install "$pkg" 2>/dev/null; then
+        echo "  ✓ Installed: $pkg"
+        IPV6_NAT_INSTALLED=true
+        break
+    else
+        echo "  ✗ Not available: $pkg"
+    fi
+done
+
+# Install ip6tables if not already installed
+opkg list-installed | grep -q ip6tables || opkg install ip6tables 2>/dev/null
+
+if [ "$IPV6_NAT_INSTALLED" = "true" ]; then
+    echo "✓ IPv6 NAT support installed"
+
+    # Try to load kernel modules
+    echo "  Loading IPv6 NAT kernel modules..."
+    modprobe nf_nat 2>/dev/null || echo "  (nf_nat already loaded or not needed)"
+    modprobe ip6table_nat 2>/dev/null || echo "  (ip6table_nat already loaded or not needed)"
+    modprobe nf_conntrack 2>/dev/null || echo "  (nf_conntrack already loaded or not needed)"
+
+    # Test if IPv6 NAT actually works
+    if ip6tables -t nat -L >/dev/null 2>&1; then
+        echo "  ✓ IPv6 NAT is functional"
+    else
+        echo "  ⚠ IPv6 NAT modules installed but not functional"
+        echo "  This may require a reboot or kernel upgrade"
+        IPV6_NAT_INSTALLED=false
+    fi
+else
+    echo "⚠ IPv6 NAT support NOT available on this system"
+    echo ""
+    echo "This means:"
+    echo "  ✓ Your device WILL have dual-stack internet access (IPv4 + IPv6)"
+    echo "  ✗ External IPv6 clients CANNOT connect to your device services"
+    echo ""
+    echo "IPv6 proxy requires kernel NAT6 support which may not be available on:"
+    echo "  - Older OpenWrt versions (< 19.07)"
+    echo "  - Custom kernels without NAT6 compiled in"
+    echo "  - Some embedded devices with minimal kernels"
+    echo ""
+    echo "To enable IPv6 proxy in the future:"
+    echo "  1. Upgrade to OpenWrt 21.02 or newer"
+    echo "  2. Or compile custom kernel with CONFIG_NF_NAT_IPV6=y"
+fi
+
+echo ""
+echo "✓ Core dependencies installed"
 echo ""
 
 # Create directories

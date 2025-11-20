@@ -61,12 +61,10 @@ PORT_FORWARDS = {
 
 # IPv6→IPv4 proxy ports (for IPv6-only networks)
 # Format: {ipv6_port: device_port}
-# NOTE: Ports chosen to avoid conflicts with OpenWrt services:
-#   - LuCI web interface: ports 80, 443
-#   - SSH: port 22
-#   - DNS: port 53
+# NOTE: Requires kmod-ipt-nat6 kernel module (install with: opkg install kmod-ipt-nat6)
+# Enable this for IPv6-only networks where external clients need to access device services
 IPV6_PROXY_PORTS = {
-    8080: 80,  # HTTP: [ipv6]:8080 → device:80 (avoids LuCI on port 80)
+    8080: 80,  # HTTP: [ipv6]:8080 → device:80
     2323: 23,  # Telnet: [ipv6]:2323 → device:23
     5000: 5000,  # Alt HTTP: [ipv6]:5000 → device:5000
 }

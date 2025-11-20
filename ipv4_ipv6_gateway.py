@@ -320,9 +320,20 @@ class SimpleGateway:
             self._setup_ipv4_port_forwarding(lan_ip, wan_ipv4)
 
         # Step 5: Setup IPv6 proxy (always, when IPv6 is available)
-        # This allows IPv6 clients to access the device even on dual-stack networks
-        if wan_ipv6:
-            self._setup_ipv6_proxy(mac, lan_ip, wan_ipv6)
+        if wan_ipv6 and cfg.IPV6_PROXY_PORTS:
+            # Check if IPv6 NAT is available first
+            if self._check_ipv6_nat_support():
+                self._setup_ipv6_proxy(wan_ipv6, lan_ip)
+            else:
+                self.logger.warning(
+                    "IPv6 NAT not available - skipping IPv6 proxy setup"
+                )
+                self.logger.warning(
+                    "Your device has IPv6 internet access, but external IPv6 clients cannot connect to it"
+                )
+                self.logger.info(
+                    "To enable IPv6 proxy, install: opkg install kmod-ipt-nat6 ip6tables"
+                )
 
         # Mark as configured
         self.device.status = "configured"
@@ -690,6 +701,36 @@ class SimpleGateway:
 
             except subprocess.CalledProcessError as e:
                 self.logger.warning(f"Failed to setup port forward {gateway_port}: {e}")
+
+    def _check_ipv6_nat_support(self) -> bool:
+        """
+        Check if IPv6 NAT is available on the system
+
+        Returns:
+            True if ip6tables NAT table is accessible, False otherwise
+        """
+        try:
+            # Try to access the NAT table - this will fail if not available
+            result = subprocess.run(
+                [cfg.CMD_IP6TABLES, "-t", "nat", "-L"],
+                capture_output=True,
+                timeout=2,
+            )
+
+            if result.returncode == 0:
+                self.logger.info("✓ IPv6 NAT support detected and functional")
+                return True
+            else:
+                error_msg = result.stderr.decode().strip()
+                self.logger.info(f"IPv6 NAT not available: {error_msg}")
+                return False
+
+        except FileNotFoundError:
+            self.logger.info("ip6tables command not found - IPv6 NAT not available")
+            return False
+        except Exception as e:
+            self.logger.debug(f"IPv6 NAT check failed: {e}")
+            return False
 
     def _setup_ipv6_proxy(self, mac: str, lan_ip: str, wan_ipv6: str):
         """
