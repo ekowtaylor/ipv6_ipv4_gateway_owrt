@@ -85,7 +85,7 @@ echo "Installing dependencies..."
 opkg update
 opkg install python3 python3-pip ip-full iptables kmod-ipt-nat kmod-nf-nat6
 opkg install odhcp6c  # DHCPv6 client
-opkg install udhcpc   # DHCPv4 client (usually pre-installed)
+# Note: udhcpc is part of BusyBox and already included in OpenWrt
 opkg install socat    # For IPv6→IPv4 port forwarding
 echo "✓ Dependencies installed"
 echo ""
