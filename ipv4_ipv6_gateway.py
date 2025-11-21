@@ -384,7 +384,7 @@ class SimpleGateway:
         if wan_ipv6 and cfg.IPV6_PROXY_PORTS:
             # Check if IPv6 NAT is available first
             if self._check_ipv6_nat_support():
-                self._setup_ipv6_proxy(wan_ipv6, lan_ip)
+                self._setup_ipv6_proxy(mac, lan_ip, wan_ipv6)
             else:
                 self.logger.warning(
                     "IPv6 NAT not available - skipping IPv6 proxy setup"
