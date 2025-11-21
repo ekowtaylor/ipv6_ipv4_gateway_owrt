@@ -46,10 +46,28 @@ fi
 # Step 1: Stop service
 echo "Step 1: Stopping service..."
 
+# Disable service first (prevent auto-restart)
 if [ -x "$INIT_SCRIPT" ]; then
+    echo "- Disabling init.d service..."
+    "$INIT_SCRIPT" disable 2>/dev/null || true
     echo "- Stopping init.d service..."
     "$INIT_SCRIPT" stop 2>/dev/null || true
-    "$INIT_SCRIPT" disable 2>/dev/null || true
+    sleep 2
+fi
+
+# Kill all related processes forcefully
+echo "- Killing all gateway processes..."
+killall -9 python3 2>/dev/null || true
+killall -9 socat 2>/dev/null || true
+killall -9 odhcp6c 2>/dev/null || true
+killall -9 udhcpc 2>/dev/null || true
+sleep 1
+
+# Verify all processes are dead
+if pgrep -f ipv4_ipv6_gateway.py >/dev/null 2>&1; then
+    echo "  ⚠ Warning: Gateway process still running, attempting manual kill..."
+    pkill -9 -f ipv4_ipv6_gateway.py
+    sleep 1
 fi
 
 # Restore original MAC address via UCI (OpenWrt-compatible)
@@ -87,10 +105,7 @@ else
     echo "  (No saved MAC found - leaving current MAC unchanged)"
 fi
 
-# Kill Python service
-killall python3 2>/dev/null || true
-
-echo "✓ Service stopped"
+echo "✓ All services stopped and processes killed"
 echo ""
 
 # Step 2: Backup files
@@ -215,9 +230,28 @@ EOF
 
     # Clean up iptables rules added by gateway
     echo "- Cleaning up iptables rules..."
+
+    # Flush all custom chains created by gateway
     iptables -t nat -F PREROUTING 2>/dev/null || true
+    iptables -t nat -F POSTROUTING 2>/dev/null || true
     iptables -F FORWARD 2>/dev/null || true
-    ip6tables -t nat -F POSTROUTING 2>/dev/null || true
+
+    # Remove specific gateway rules (if they exist)
+    # MASQUERADE rule for LAN→WAN
+    iptables -t nat -D POSTROUTING -s 192.168.1.0/24 -o eth0 -j MASQUERADE 2>/dev/null || true
+
+    # IPv6 SNAT rules (if IPv6 NAT is available)
+    if ip6tables -t nat -L >/dev/null 2>&1; then
+        ip6tables -t nat -F POSTROUTING 2>/dev/null || true
+        echo "  ✓ IPv6 NAT rules cleaned"
+    fi
+
+    # Restore default firewall policies
+    iptables -P INPUT ACCEPT
+    iptables -P OUTPUT ACCEPT
+    iptables -P FORWARD REJECT
+
+    echo "  ✓ iptables rules cleaned"
 
     # Restart all network services
     echo "- Restarting network services..."

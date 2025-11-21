@@ -285,16 +285,28 @@ start_service() {
 }
 
 stop_service() {
-    # Kill the service
-    killall python3 2>/dev/null || true
+    # Kill only our specific gateway process (not ALL python3!)
+    pkill -f "ipv4_ipv6_gateway.py" 2>/dev/null || true
 
-    # Restore original MAC if exists
+    # Also kill related processes
+    killall socat 2>/dev/null || true
+
+    # Restore original MAC via UCI (OpenWrt-compatible)
     if [ -f /etc/ipv4-ipv6-gateway/original_wan_mac.txt ]; then
         ORIGINAL_MAC=$(cat /etc/ipv4-ipv6-gateway/original_wan_mac.txt)
         echo "Restoring original WAN MAC: $ORIGINAL_MAC"
+
+        # Remove MAC override from UCI
+        uci delete network.wan.macaddr 2>/dev/null || true
+        uci commit network 2>/dev/null || true
+
+        # Manual fallback
         ip link set eth0 down
         ip link set eth0 address $ORIGINAL_MAC
         ip link set eth0 up
+
+        # Reload WAN interface
+        ifup wan 2>/dev/null || true
     fi
 }
 EOF
@@ -422,6 +434,18 @@ else
 fi
 echo ""
 
+# Save original WAN MAC address BEFORE service starts (CRITICAL!)
+echo "Saving original WAN MAC address..."
+ORIGINAL_WAN_MAC=$(ip link show eth0 | grep -o 'link/ether [^ ]*' | awk '{print $2}')
+if [ -n "$ORIGINAL_WAN_MAC" ]; then
+    mkdir -p "$CONFIG_DIR"
+    echo "$ORIGINAL_WAN_MAC" > "$CONFIG_DIR/original_wan_mac.txt"
+    echo "  ✓ Original MAC saved: $ORIGINAL_WAN_MAC"
+else
+    echo "  ⚠ Could not detect original MAC - may need manual restore on uninstall"
+fi
+echo ""
+
 # Start service
 if [ "$AUTO_START" = "true" ]; then
     echo "Starting service..."
@@ -444,18 +468,6 @@ echo ""
 echo "========================================="
 echo " Installation Complete!"
 echo "========================================="
-echo ""
-
-# Save original WAN MAC address for uninstall
-echo "Saving original WAN MAC address..."
-ORIGINAL_WAN_MAC=$(ip link show eth0 | grep -o 'link/ether [^ ]*' | awk '{print $2}')
-if [ -n "$ORIGINAL_WAN_MAC" ]; then
-    mkdir -p "$CONFIG_DIR"
-    echo "$ORIGINAL_WAN_MAC" > "$CONFIG_DIR/original_wan_mac.txt"
-    echo "  Original MAC saved: $ORIGINAL_WAN_MAC"
-else
-    echo "  ⚠ Could not detect original MAC - may need manual restore on uninstall"
-fi
 echo ""
 
 echo "Quick Start:"

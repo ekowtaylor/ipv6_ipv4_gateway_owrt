@@ -764,77 +764,21 @@ class SimpleGateway:
             self.logger.error(f"  ✗ Failed to setup MASQUERADE: {e}")
             self.logger.error("  WARNING: Return traffic may not work!")
 
-        # Forward ICMP (ping) to device - makes WAN IP truly transparent
-        try:
-            # Check if ICMP forwarding rule exists
-            check = subprocess.run(
-                [
-                    cfg.CMD_IPTABLES,
-                    "-t",
-                    "nat",
-                    "-C",
-                    "PREROUTING",
-                    "-p",
-                    "icmp",
-                    "-d",
-                    wan_ip,
-                    "-j",
-                    "DNAT",
-                    "--to-destination",
-                    lan_ip,
-                ],
-                capture_output=True,
-            )
+        # REMOVED: ICMP forwarding to device
+        # REASON: This breaks router connectivity!
+        # The router gets WAN IP via MAC spoofing, but forwarding ALL ICMP
+        # to that IP breaks ping to the router itself.
+        #
+        # DECISION: Let router respond to pings normally
+        # Device will be accessible via:
+        # - Direct LAN IP (192.168.1.x)
+        # - Port forwards (TCP/UDP)
+        # - NOT via ICMP ping to WAN IP (acceptable tradeoff)
 
-            if check.returncode != 0:
-                # Add ICMP DNAT rule (ping requests → device)
-                subprocess.run(
-                    [
-                        cfg.CMD_IPTABLES,
-                        "-t",
-                        "nat",
-                        "-A",
-                        "PREROUTING",
-                        "-p",
-                        "icmp",
-                        "-d",
-                        wan_ip,
-                        "-j",
-                        "DNAT",
-                        "--to-destination",
-                        lan_ip,
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-
-                # Add FORWARD rule for ICMP
-                subprocess.run(
-                    [
-                        cfg.CMD_IPTABLES,
-                        "-A",
-                        "FORWARD",
-                        "-p",
-                        "icmp",
-                        "-d",
-                        lan_ip,
-                        "-j",
-                        "ACCEPT",
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-
-                self.logger.info(
-                    f"  ✓ ICMP forward: {wan_ip} (ping) → {lan_ip} (transparent)"
-                )
-            else:
-                self.logger.info(
-                    f"  ↻ ICMP forward already exists: {wan_ip} → {lan_ip}"
-                )
-
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"  ✗ Failed to setup ICMP forwarding: {e}")
+        self.logger.info(
+            f"  ℹ ICMP forwarding disabled (prevents breaking router ping)"
+        )
+        self.logger.info(f"  ℹ Device accessible via: LAN IP {lan_ip} or port forwards")
 
         # Forward TCP ports to device
         ports_added = 0
