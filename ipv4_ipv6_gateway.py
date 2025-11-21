@@ -412,6 +412,51 @@ class SimpleGateway:
                 capture_output=True,
             )
 
+            # Step 6: Enable IPv6 on interface (critical for SLAAC!)
+            self.logger.info("Enabling IPv6 and Router Advertisement acceptance...")
+            try:
+                # Enable IPv6 on this interface
+                subprocess.run(
+                    [
+                        "sysctl",
+                        "-w",
+                        f"net.ipv6.conf.{self.wan_interface}.disable_ipv6=0",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+
+                # Accept Router Advertisements (required for SLAAC)
+                subprocess.run(
+                    ["sysctl", "-w", f"net.ipv6.conf.{self.wan_interface}.accept_ra=2"],
+                    check=True,
+                    capture_output=True,
+                )
+
+                # Enable autoconf (SLAAC autoconfiguration)
+                subprocess.run(
+                    ["sysctl", "-w", f"net.ipv6.conf.{self.wan_interface}.autoconf=1"],
+                    check=True,
+                    capture_output=True,
+                )
+
+                # Accept RA default route
+                subprocess.run(
+                    [
+                        "sysctl",
+                        "-w",
+                        f"net.ipv6.conf.{self.wan_interface}.accept_ra_defrtr=1",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+
+                self.logger.info("✓ IPv6 Router Advertisement acceptance enabled")
+
+            except subprocess.CalledProcessError as e:
+                self.logger.warning(f"Failed to enable IPv6 RA: {e}")
+                self.logger.warning("SLAAC may not work - continuing anyway")
+
             # Wait for interface to come up and link negotiation
             # Fast mode: 0.5s (MAC already registered, just need link up)
             # Normal mode: 2s (wait for link negotiation + firewall registration)
