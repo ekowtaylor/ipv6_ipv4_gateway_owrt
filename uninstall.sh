@@ -222,6 +222,30 @@ config rule
 	option family 'ipv6'
 	option target 'ACCEPT'
 
+config rule
+	option name 'Allow-IPv6-Proxy-HTTP-8080'
+	option src 'wan'
+	option proto 'tcp'
+	option dest_port '8080'
+	option family 'ipv6'
+	option target 'ACCEPT'
+
+config rule
+	option name 'Allow-IPv6-Proxy-HTTP-5000'
+	option src 'wan'
+	option proto 'tcp'
+	option dest_port '5000'
+	option family 'ipv6'
+	option target 'ACCEPT'
+
+config rule
+	option name 'Allow-IPv6-Proxy-Telnet'
+	option src 'wan'
+	option proto 'tcp'
+	option dest_port '2323'
+	option family 'ipv6'
+	option target 'ACCEPT'
+
 config forwarding
 	option src 'lan'
 	option dest 'wan'
