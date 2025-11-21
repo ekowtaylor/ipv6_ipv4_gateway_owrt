@@ -494,7 +494,7 @@ SYSCTL_EOF
     # IPv6 Proxy Port Rules (for IPv6→IPv4 proxying via socat)
     # These allow IPv6 clients to access device services via router's IPv6 address
     echo "  Adding IPv6 proxy port rules..."
-    
+
     # IPv6 HTTP on port 8080 → device:80 (via socat proxy)
     uci add firewall rule
     uci set firewall.@rule[-1].name='Allow-IPv6-Proxy-HTTP-8080'
@@ -503,7 +503,7 @@ SYSCTL_EOF
     uci set firewall.@rule[-1].dest_port='8080'
     uci set firewall.@rule[-1].family='ipv6'
     uci set firewall.@rule[-1].target='ACCEPT'
-    
+
     # IPv6 HTTP on port 5000 → device:5000 (via socat proxy)
     uci add firewall rule
     uci set firewall.@rule[-1].name='Allow-IPv6-Proxy-HTTP-5000'
@@ -512,7 +512,7 @@ SYSCTL_EOF
     uci set firewall.@rule[-1].dest_port='5000'
     uci set firewall.@rule[-1].family='ipv6'
     uci set firewall.@rule[-1].target='ACCEPT'
-    
+
     # IPv6 Telnet on port 2323 → device:23 (via socat proxy)
     uci add firewall rule
     uci set firewall.@rule[-1].name='Allow-IPv6-Proxy-Telnet'

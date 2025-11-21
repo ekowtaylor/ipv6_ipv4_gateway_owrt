@@ -949,16 +949,60 @@ class SimpleGateway:
         SNAT ensures the device sees connections from the gateway (192.168.1.1)
         instead of random IPv6 addresses, which improves compatibility.
         """
-        self.logger.info(f"Setting up IPv6→IPv4 proxy for {lan_ip}")
+        self.logger.info("=" * 70)
+        self.logger.info("IPv6 → IPv4 PROXY SETUP")
+        self.logger.info("=" * 70)
+        self.logger.info(f"Device MAC:      {mac}")
+        self.logger.info(f"Device LAN IP:   {lan_ip}")
+        self.logger.info(f"Router WAN IPv6: {wan_ipv6}")
+        self.logger.info(f"Proxy Ports:     {cfg.IPV6_PROXY_PORTS}")
+        self.logger.info("")
+
+        # Check if IPv6 NAT is available
+        try:
+            result = subprocess.run(
+                [cfg.CMD_IP6TABLES, "-t", "nat", "-L"],
+                capture_output=True,
+                timeout=2,
+            )
+            if result.returncode != 0:
+                self.logger.error("IPv6 NAT (ip6tables -t nat) is NOT available!")
+                self.logger.error("IPv6 proxy will NOT work without IPv6 NAT support.")
+                self.logger.error(
+                    "Install with: opkg install kmod-ipt-nat6 ip6tables-mod-nat"
+                )
+                return
+            self.logger.info("✓ IPv6 NAT support detected")
+        except Exception as e:
+            self.logger.error(f"Failed to check IPv6 NAT support: {e}")
+            return
+
+        # Check if socat is available
+        if not os.path.exists(cfg.CMD_SOCAT):
+            self.logger.error(f"socat not found at {cfg.CMD_SOCAT}")
+            self.logger.error("Install with: opkg install socat")
+            return
+        self.logger.info(f"✓ socat found at {cfg.CMD_SOCAT}")
+        self.logger.info("")
 
         # Kill existing socat processes for this device
+        self.logger.info("Cleaning up existing proxy processes...")
         self._stop_proxy(mac)
+        self.logger.info("✓ Existing proxies stopped")
+        self.logger.info("")
+
+        # Setup each port
+        successful_ports = []
+        failed_ports = []
 
         for ipv6_port, device_port in cfg.IPV6_PROXY_PORTS.items():
+            self.logger.info(
+                f"Setting up proxy: IPv6 port {ipv6_port} → Device port {device_port}"
+            )
+
             try:
-                # Add ip6tables SNAT rule for return traffic
-                # This makes the device see requests from gateway IP (192.168.1.1)
-                # instead of the IPv6 client's address
+                # Step 1: Add ip6tables SNAT rule for return traffic
+                self.logger.info(f"  Step 1: Adding ip6tables SNAT rule...")
 
                 # Remove existing rule (if any)
                 try:
@@ -983,8 +1027,9 @@ class SimpleGateway:
                         capture_output=True,
                         timeout=2,
                     )
+                    self.logger.info(f"    Removed old SNAT rule")
                 except:
-                    pass  # Rule doesn't exist yet
+                    self.logger.info(f"    No existing SNAT rule to remove")
 
                 # Add SNAT rule for this port
                 subprocess.run(
@@ -1010,43 +1055,146 @@ class SimpleGateway:
                 )
 
                 self.logger.info(
-                    f"Added ip6tables SNAT rule for {lan_ip}:{device_port} (via {cfg.LAN_GATEWAY_IP})"
+                    f"    ✓ SNAT rule added: {lan_ip}:{device_port} → {cfg.LAN_GATEWAY_IP}"
                 )
 
-                # Start socat in background
-                # IPv6 client → [wan_ipv6]:ipv6_port → socat → lan_ip:device_port
-                # Device sees traffic from 192.168.1.1 due to SNAT rule
+                # Step 2: Start socat proxy
+                self.logger.info(f"  Step 2: Starting socat proxy...")
+
                 cmd = [
                     cfg.CMD_SOCAT,
                     f"TCP6-LISTEN:{ipv6_port},bind=[{wan_ipv6}],fork,reuseaddr",
                     f"TCP4:{lan_ip}:{device_port}",
                 ]
 
+                self.logger.info(f"    Command: {' '.join(cmd)}")
+
                 # Start in background
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     start_new_session=True,
                 )
 
-                self.logger.info(
-                    f"IPv6 proxy: [{wan_ipv6}]:{ipv6_port} → {lan_ip}:{device_port} (with SNAT)"
-                )
+                self.logger.info(f"    ✓ socat started (PID: {proc.pid})")
+
+                # Verify socat is running
+                time.sleep(0.5)
+                if proc.poll() is None:
+                    self.logger.info(f"    ✓ socat process verified running")
+                    successful_ports.append((ipv6_port, device_port))
+                    self.logger.info(
+                        f"  ✅ SUCCESS: [{wan_ipv6}]:{ipv6_port} → {lan_ip}:{device_port}"
+                    )
+                else:
+                    self.logger.error(f"    ✗ socat process died immediately!")
+                    failed_ports.append((ipv6_port, device_port, "Process died"))
 
             except subprocess.CalledProcessError as e:
-                self.logger.warning(
-                    f"Failed to setup IPv6 proxy on port {ipv6_port}: {e}"
+                error_msg = f"ip6tables command failed: {e}"
+                self.logger.error(f"  ❌ FAILED: {error_msg}")
+                self.logger.error(
+                    f"     Hint: Install IPv6 NAT support with: opkg install kmod-ipt-nat6"
                 )
-                self.logger.warning(
-                    f"Hint: Install IPv6 NAT support with: opkg install kmod-ipt-nat6"
-                )
+                failed_ports.append((ipv6_port, device_port, error_msg))
             except Exception as e:
+                error_msg = str(e)
+                self.logger.error(f"  ❌ FAILED: {error_msg}")
+                failed_ports.append((ipv6_port, device_port, error_msg))
+
+            self.logger.info("")
+
+        # Summary
+        self.logger.info("=" * 70)
+        self.logger.info("IPv6 PROXY SETUP SUMMARY")
+        self.logger.info("=" * 70)
+
+        if successful_ports:
+            self.logger.info(
+                f"✅ Successfully configured {len(successful_ports)} proxy port(s):"
+            )
+            for ipv6_port, device_port in successful_ports:
+                self.logger.info(
+                    f"   • IPv6 port {ipv6_port} → Device port {device_port}"
+                )
+                self.logger.info(f"     Access: curl 'http://[{wan_ipv6}]:{ipv6_port}'")
+
+        if failed_ports:
+            self.logger.warning(
+                f"❌ Failed to configure {len(failed_ports)} proxy port(s):"
+            )
+            for ipv6_port, device_port, error in failed_ports:
                 self.logger.warning(
-                    f"Error setting up IPv6 proxy on port {ipv6_port}: {e}"
+                    f"   • IPv6 port {ipv6_port} → Device port {device_port}: {error}"
                 )
 
-        time.sleep(1)  # Let socat start
+        if not successful_ports and not failed_ports:
+            self.logger.info("⚠ No proxy ports configured (IPV6_PROXY_PORTS is empty)")
+
+        self.logger.info("")
+
+        # Validation: Check running socat processes
+        self.logger.info("Validating socat proxy processes...")
+        try:
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            socat_procs = [
+                line
+                for line in result.stdout.split("\n")
+                if "socat" in line and "TCP6-LISTEN" in line
+            ]
+
+            if socat_procs:
+                self.logger.info(
+                    f"✓ Found {len(socat_procs)} running socat process(es):"
+                )
+                for proc in socat_procs:
+                    self.logger.info(f"  {proc.strip()}")
+            else:
+                self.logger.warning("⚠ No socat processes found running!")
+        except Exception as e:
+            self.logger.warning(f"Could not validate socat processes: {e}")
+
+        self.logger.info("")
+
+        # Validation: Check ip6tables SNAT rules
+        self.logger.info("Validating ip6tables SNAT rules...")
+        try:
+            result = subprocess.run(
+                [cfg.CMD_IP6TABLES, "-t", "nat", "-L", "POSTROUTING", "-n", "-v"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+
+            if result.returncode == 0:
+                snat_lines = [
+                    line
+                    for line in result.stdout.split("\n")
+                    if "SNAT" in line and lan_ip in line
+                ]
+                if snat_lines:
+                    self.logger.info(
+                        f"✓ Found {len(snat_lines)} SNAT rule(s) for {lan_ip}:"
+                    )
+                    for line in snat_lines:
+                        self.logger.info(f"  {line.strip()}")
+                else:
+                    self.logger.warning(f"⚠ No SNAT rules found for {lan_ip}")
+            else:
+                self.logger.warning("⚠ Could not list ip6tables SNAT rules")
+        except Exception as e:
+            self.logger.warning(f"Could not validate SNAT rules: {e}")
+
+        self.logger.info("=" * 70)
+        self.logger.info("")
+
+        time.sleep(1)  # Let socat stabilize
 
     def _stop_proxy(self, mac: str):
         """Stop all socat proxies and remove IPv6 SNAT rules"""
