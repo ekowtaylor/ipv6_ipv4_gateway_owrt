@@ -311,8 +311,42 @@ else
 fi
 echo ""
 
-# Step 4: Remove files
-echo "Step 4: Removing installed files..."
+# Step 4: Remove IPv6 NAT packages (optional)
+echo "Step 4: Checking for IPv6 NAT packages..."
+
+if [ -f "$CONFIG_DIR/ipv6_nat_package.txt" ]; then
+    echo "Found IPv6 NAT packages installed by gateway:"
+    cat "$CONFIG_DIR/ipv6_nat_package.txt"
+    echo ""
+
+    echo "Do you want to remove these IPv6 NAT packages? (y/N)"
+    if [ "$RESTORE_NETWORK" -eq 1 ]; then
+        # In auto-restore mode, don't prompt
+        REMOVE_IPV6_NAT="n"
+        echo "  (skipped in auto-restore mode)"
+    else
+        read -r REMOVE_IPV6_NAT
+    fi
+
+    if [ "$REMOVE_IPV6_NAT" = "y" ] || [ "$REMOVE_IPV6_NAT" = "Y" ]; then
+        echo "Removing IPv6 NAT packages..."
+        while IFS= read -r pkg; do
+            if [ -n "$pkg" ]; then
+                echo "  Removing: $pkg"
+                opkg remove "$pkg" 2>/dev/null || echo "    (already removed or not found)"
+            fi
+        done < "$CONFIG_DIR/ipv6_nat_package.txt"
+        echo "✓ IPv6 NAT packages removed"
+    else
+        echo "✓ Keeping IPv6 NAT packages (can be used by other services)"
+    fi
+else
+    echo "  (No IPv6 NAT package info found - nothing to remove)"
+fi
+echo ""
+
+# Step 5: Remove files
+echo "Step 5: Removing installed files..."
 
 rm -rf "$INSTALL_DIR" 2>/dev/null || true
 rm -rf "$CONFIG_DIR" 2>/dev/null || true
