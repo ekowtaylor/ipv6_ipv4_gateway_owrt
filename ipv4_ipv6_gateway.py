@@ -703,6 +703,28 @@ class SimpleGateway:
         self.logger.warning(f"IPv6 acquisition failed ({mode_str} mode)")
         return None
 
+    def _check_port_open(self, ip: str, port: int, timeout: float = 1.0) -> bool:
+        """
+        Check if a TCP port is open on the device
+        Returns True if port is listening, False otherwise
+        """
+        import socket
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+
+        try:
+            result = sock.connect_ex((ip, port))
+            sock.close()
+            return result == 0  # Port is open
+        except socket.error:
+            return False
+        finally:
+            try:
+                sock.close()
+            except:
+                pass
+
     def _setup_ipv4_port_forwarding(self, lan_ip: str, wan_ip: str):
         """
         Setup IPv4 NAT forwarding (TCP ports + ICMP)
@@ -784,9 +806,23 @@ class SimpleGateway:
         ports_added = 0
         ports_existed = 0
         ports_failed = 0
+        ports_skipped = 0
+
+        self.logger.info("Checking which device ports are actually listening...")
 
         for gateway_port, device_port in cfg.PORT_FORWARDS.items():
             try:
+                # First check if port is actually open on device
+                port_is_open = self._check_port_open(lan_ip, device_port, timeout=2.0)
+
+                if not port_is_open:
+                    self.logger.info(
+                        f"  ⊘ Port {gateway_port:5d} → {lan_ip}:{device_port:5d} (SKIPPED - port not listening)"
+                    )
+                    ports_skipped += 1
+                    continue  # Skip this port - nothing listening
+
+                # Port is open, proceed with forwarding
                 # Check if rule exists
                 check = subprocess.run(
                     [
@@ -853,7 +889,7 @@ class SimpleGateway:
                     )
 
                     self.logger.info(
-                        f"  ✓ Port {gateway_port:5d} → {lan_ip}:{device_port:5d} (ADDED)"
+                        f"  ✓ Port {gateway_port:5d} → {lan_ip}:{device_port:5d} (ADDED - service detected)"
                     )
                     ports_added += 1
                 else:
@@ -872,6 +908,7 @@ class SimpleGateway:
         self.logger.info(f"═══ Port Forwarding Summary ═══")
         self.logger.info(f"  Added:   {ports_added}")
         self.logger.info(f"  Existed: {ports_existed}")
+        self.logger.info(f"  Skipped: {ports_skipped} (ports not listening)")
         self.logger.info(f"  Failed:  {ports_failed}")
         self.logger.info(f"═══════════════════════════════")
 

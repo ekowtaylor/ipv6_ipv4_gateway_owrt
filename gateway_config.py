@@ -51,7 +51,8 @@ SLAAC_WAIT_TIME_FAST = 2  # seconds for fast reconfig (RA cache likely exists)
 # Port forwarding (IPv4 NAT)
 # Format: {gateway_port: device_port}
 PORT_FORWARDS = {
-    8080: 80,  # HTTP
+    8080: 80,  # HTTP (standard)
+    5000: 5000,  # HTTP (alternative port - Flask/Node.js apps)
     2323: 23,  # Telnet
     8443: 443,  # HTTPS
     2222: 22,  # SSH

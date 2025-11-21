@@ -395,12 +395,82 @@ SYSCTL_EOF
 
     uci set firewall.@zone[1]=zone
     uci set firewall.@zone[1].name='wan'
-    uci set firewall.@zone[1].input='ACCEPT'
+    uci set firewall.@zone[1].input='REJECT'
     uci set firewall.@zone[1].output='ACCEPT'
     uci set firewall.@zone[1].forward='REJECT'
     uci set firewall.@zone[1].masq='1'
     uci set firewall.@zone[1].mtu_fix='1'
     uci set firewall.@zone[1].network='wan wan6'
+
+    # Allow ICMP (ping) from WAN - specific rule for security
+    echo "  Adding ICMP (ping) rule for WAN..."
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-Ping'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='icmp'
+    uci set firewall.@rule[-1].icmp_type='echo-request'
+    uci set firewall.@rule[-1].family='ipv4'
+    uci set firewall.@rule[-1].target='ACCEPT'
+
+    # Allow port forwards from WAN to device
+    # These rules allow forwarded traffic to reach the device
+    echo "  Adding port forward rules for device access..."
+
+    # HTTP on port 8080 → device:80
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-Device-HTTP-80'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='tcp'
+    uci set firewall.@rule[-1].dest_port='8080'
+    uci set firewall.@rule[-1].target='ACCEPT'
+
+    # HTTP on port 5000 → device:5000
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-Device-HTTP-5000'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='tcp'
+    uci set firewall.@rule[-1].dest_port='5000'
+    uci set firewall.@rule[-1].target='ACCEPT'
+
+    # Telnet on port 2323 → device:23
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-Device-Telnet'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='tcp'
+    uci set firewall.@rule[-1].dest_port='2323'
+    uci set firewall.@rule[-1].target='ACCEPT'
+
+    # SSH on port 2222 → device:22
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-Device-SSH'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='tcp'
+    uci set firewall.@rule[-1].dest_port='2222'
+    uci set firewall.@rule[-1].target='ACCEPT'
+
+    # HTTPS on port 8443 → device:443
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-Device-HTTPS'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='tcp'
+    uci set firewall.@rule[-1].dest_port='8443'
+    uci set firewall.@rule[-1].target='ACCEPT'
+
+    # VNC on port 5900 → device:5900
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-Device-VNC'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='tcp'
+    uci set firewall.@rule[-1].dest_port='5900'
+    uci set firewall.@rule[-1].target='ACCEPT'
+
+    # RDP on port 3389 → device:3389
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-Device-RDP'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='tcp'
+    uci set firewall.@rule[-1].dest_port='3389'
+    uci set firewall.@rule[-1].target='ACCEPT'
 
     # Allow forwarding from LAN to WAN
     uci set firewall.@forwarding[0]=forwarding

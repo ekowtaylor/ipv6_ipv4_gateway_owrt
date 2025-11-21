@@ -192,12 +192,20 @@ config zone
 
 config zone
 	option name 'wan'
-	option input 'ACCEPT'
+	option input 'REJECT'
 	option output 'ACCEPT'
 	option forward 'REJECT'
 	option masq '1'
 	option mtu_fix '1'
 	option network 'wan wan6'
+
+config rule
+	option name 'Allow-Ping'
+	option src 'wan'
+	option proto 'icmp'
+	option icmp_type 'echo-request'
+	option family 'ipv4'
+	option target 'ACCEPT'
 
 config forwarding
 	option src 'lan'
