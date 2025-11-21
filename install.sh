@@ -349,14 +349,23 @@ if [ "$APPLY_NETWORK" = "true" ]; then
     uci set dhcp.lan.ra='server'
     uci commit dhcp
 
+    # Enable IPv6 globally (CRITICAL - OpenWrt disables IPv6 by default!)
+    echo "  Enabling IPv6 globally..."
+    echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6
+    echo 0 > /proc/sys/net/ipv6/conf/default/disable_ipv6
+    echo 0 > /proc/sys/net/ipv6/conf/eth0/disable_ipv6
+
     # Enable IP forwarding (required for gateway functionality)
     echo "  Enabling IP forwarding..."
     echo 1 > /proc/sys/net/ipv4/ip_forward
     echo 1 > /proc/sys/net/ipv6/conf/all/forwarding
 
-    # Make forwarding persistent
+    # Make IPv6 and forwarding persistent
     cat >> /etc/sysctl.conf << 'SYSCTL_EOF'
-# Gateway IP forwarding (added by ipv4-ipv6-gateway installer)
+# Gateway IPv6 and IP forwarding (added by ipv4-ipv6-gateway installer)
+net.ipv6.conf.all.disable_ipv6=0
+net.ipv6.conf.default.disable_ipv6=0
+net.ipv6.conf.eth0.disable_ipv6=0
 net.ipv4.ip_forward=1
 net.ipv6.conf.all.forwarding=1
 SYSCTL_EOF
