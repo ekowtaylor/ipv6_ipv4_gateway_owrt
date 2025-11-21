@@ -207,9 +207,28 @@ config rule
 	option family 'ipv4'
 	option target 'ACCEPT'
 
+config rule
+	option name 'Allow-ICMPv6'
+	option src 'wan'
+	option proto 'icmp'
+	option family 'ipv6'
+	option target 'ACCEPT'
+
+config rule
+	option name 'Allow-DHCPv6'
+	option src 'wan'
+	option proto 'udp'
+	option dest_port '546'
+	option family 'ipv6'
+	option target 'ACCEPT'
+
 config forwarding
 	option src 'lan'
 	option dest 'wan'
+
+config forwarding
+	option src 'wan'
+	option dest 'lan'
 EOF
     fi
     uci commit firewall

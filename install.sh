@@ -402,7 +402,7 @@ SYSCTL_EOF
     uci set firewall.@zone[1].mtu_fix='1'
     uci set firewall.@zone[1].network='wan wan6'
 
-    # Allow ICMP (ping) from WAN - specific rule for security
+    # Allow ICMP (ping) from WAN - specific rule for security (IPv4)
     echo "  Adding ICMP (ping) rule for WAN..."
     uci add firewall rule
     uci set firewall.@rule[-1].name='Allow-Ping'
@@ -410,6 +410,25 @@ SYSCTL_EOF
     uci set firewall.@rule[-1].proto='icmp'
     uci set firewall.@rule[-1].icmp_type='echo-request'
     uci set firewall.@rule[-1].family='ipv4'
+    uci set firewall.@rule[-1].target='ACCEPT'
+
+    # Allow ICMPv6 for Router Advertisements (SLAAC)
+    echo "  Adding ICMPv6 rule for Router Advertisements..."
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-ICMPv6'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='icmp'
+    uci set firewall.@rule[-1].family='ipv6'
+    uci set firewall.@rule[-1].target='ACCEPT'
+
+    # Allow DHCPv6 client responses
+    echo "  Adding DHCPv6 client rule..."
+    uci add firewall rule
+    uci set firewall.@rule[-1].name='Allow-DHCPv6'
+    uci set firewall.@rule[-1].src='wan'
+    uci set firewall.@rule[-1].proto='udp'
+    uci set firewall.@rule[-1].dest_port='546'
+    uci set firewall.@rule[-1].family='ipv6'
     uci set firewall.@rule[-1].target='ACCEPT'
 
     # Allow port forwards from WAN to device
@@ -476,6 +495,11 @@ SYSCTL_EOF
     uci set firewall.@forwarding[0]=forwarding
     uci set firewall.@forwarding[0].src='lan'
     uci set firewall.@forwarding[0].dest='wan'
+
+    # Allow forwarding from WAN to LAN (for port forwards)
+    uci add firewall forwarding
+    uci set firewall.@forwarding[-1].src='wan'
+    uci set firewall.@forwarding[-1].dest='lan'
 
     uci commit firewall
 
