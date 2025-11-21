@@ -156,31 +156,54 @@ else
     fi
     echo ""
 
-    echo -e "${BLUE}2. ip6tables NAT Support:${NC}"
+    echo -e "${BLUE}2. IPv6 NAT Support (nftables/ip6tables):${NC}"
     echo "------------------------------"
-    if ip6tables -t nat -L >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ ip6tables NAT is available${NC}"
+
+    # Check for nftables first (modern OpenWrt 22+)
+    if command -v nft >/dev/null 2>&1 && nft list table ip6 nat >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ nftables IPv6 NAT is available (modern)${NC}"
+        echo ""
+        echo "Current nftables IPv6 NAT rules (POSTROUTING):"
+        nft list chain ip6 nat POSTROUTING 2>/dev/null | head -20
+        FIREWALL_TYPE="nftables"
+    # Fall back to ip6tables (legacy OpenWrt 19-21)
+    elif ip6tables -t nat -L >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ ip6tables NAT is available (legacy)${NC}"
         echo ""
         echo "Current ip6tables NAT rules (POSTROUTING):"
         ip6tables -t nat -L POSTROUTING -n -v | head -15
+        FIREWALL_TYPE="ip6tables"
     else
-        echo -e "${RED}❌ ip6tables NAT is NOT available!${NC}"
+        echo -e "${RED}❌ IPv6 NAT is NOT available!${NC}"
         echo "   This is required for IPv6→IPv4 proxy"
         echo ""
         echo "Install with:"
         echo "  opkg update"
         echo "  opkg install kmod-ipt-nat6 ip6tables-mod-nat"
+        FIREWALL_TYPE="none"
     fi
     echo ""
 
-    echo -e "${BLUE}3. ip6tables SNAT Rules (return traffic):${NC}"
+    echo -e "${BLUE}3. IPv6 SNAT Rules (return traffic):${NC}"
     echo "------------------------------"
-    if ip6tables -t nat -L POSTROUTING -n -v 2>/dev/null | grep -q "$DEVICE_LAN_IP"; then
-        echo -e "${GREEN}✓ SNAT rules found for device${NC}"
-        ip6tables -t nat -L POSTROUTING -n -v | grep "$DEVICE_LAN_IP"
+    if [ "$FIREWALL_TYPE" = "nftables" ]; then
+        if nft list chain ip6 nat POSTROUTING 2>/dev/null | grep -q "$DEVICE_LAN_IP"; then
+            echo -e "${GREEN}✓ nftables SNAT rules found for device${NC}"
+            nft list chain ip6 nat POSTROUTING | grep "$DEVICE_LAN_IP"
+        else
+            echo -e "${YELLOW}⚠ No nftables SNAT rules found for device${NC}"
+            echo "  IPv6 proxy may not work correctly"
+        fi
+    elif [ "$FIREWALL_TYPE" = "ip6tables" ]; then
+        if ip6tables -t nat -L POSTROUTING -n -v 2>/dev/null | grep -q "$DEVICE_LAN_IP"; then
+            echo -e "${GREEN}✓ ip6tables SNAT rules found for device${NC}"
+            ip6tables -t nat -L POSTROUTING -n -v | grep "$DEVICE_LAN_IP"
+        else
+            echo -e "${YELLOW}⚠ No ip6tables SNAT rules found for device${NC}"
+            echo "  IPv6 proxy may not work correctly"
+        fi
     else
-        echo -e "${YELLOW}⚠ No SNAT rules found for device${NC}"
-        echo "  IPv6 proxy may not work correctly"
+        echo -e "${RED}✗ Cannot check SNAT rules - no firewall available${NC}"
     fi
     echo ""
 
@@ -281,8 +304,22 @@ echo ""
 # IPv6 checks
 if [ -n "$DEVICE_WAN_IPV6" ]; then
     HAS_SOCAT=$(ps aux | grep -c "[s]ocat.*TCP6-LISTEN")
-    HAS_NAT6=$(ip6tables -t nat -L >/dev/null 2>&1 && echo "yes" || echo "no")
-    HAS_SNAT=$(ip6tables -t nat -L POSTROUTING -n -v 2>/dev/null | grep -c "$DEVICE_LAN_IP")
+
+    # Check IPv6 NAT support (nftables or ip6tables)
+    if command -v nft >/dev/null 2>&1 && nft list table ip6 nat >/dev/null 2>&1; then
+        HAS_NAT6="yes"
+        if nft list chain ip6 nat POSTROUTING 2>/dev/null | grep -q "$DEVICE_LAN_IP"; then
+            HAS_SNAT=$(nft list chain ip6 nat POSTROUTING | grep -c "$DEVICE_LAN_IP")
+        else
+            HAS_SNAT=0
+        fi
+    elif ip6tables -t nat -L >/dev/null 2>&1; then
+        HAS_NAT6="yes"
+        HAS_SNAT=$(ip6tables -t nat -L POSTROUTING -n -v 2>/dev/null | grep -c "$DEVICE_LAN_IP")
+    else
+        HAS_NAT6="no"
+        HAS_SNAT=0
+    fi
 
     echo -e "${BLUE}IPv6 Status:${NC}"
 

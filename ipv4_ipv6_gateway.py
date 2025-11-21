@@ -76,6 +76,9 @@ class SimpleGateway:
         self.state_file = cfg.STATE_FILE
         self.running = False
 
+        # Track firewall type (nftables or ip6tables)
+        self.ipv6_firewall_type: Optional[str] = None
+
         # Track link states for cable detection
         self.wan_link_up: Optional[bool] = None
         self.lan_link_up: Optional[bool] = None
@@ -383,7 +386,9 @@ class SimpleGateway:
         # Step 5: Setup IPv6 proxy (always, when IPv6 is available)
         if wan_ipv6 and cfg.IPV6_PROXY_PORTS:
             # Check if IPv6 NAT is available first
-            if self._check_ipv6_nat_support():
+            ipv6_nat_available, firewall_type = self._check_ipv6_nat_support()
+            if ipv6_nat_available:
+                self.ipv6_firewall_type = firewall_type
                 self._setup_ipv6_proxy(mac, lan_ip, wan_ipv6)
             else:
                 self.logger.warning(
@@ -912,15 +917,55 @@ class SimpleGateway:
         self.logger.info(f"  Failed:  {ports_failed}")
         self.logger.info(f"═══════════════════════════════")
 
-    def _check_ipv6_nat_support(self) -> bool:
+    def _check_ipv6_nat_support(self) -> tuple[bool, str]:
         """
         Check if IPv6 NAT is available on the system
 
+        Checks for both modern nftables (OpenWrt 22+) and legacy ip6tables
+
         Returns:
-            True if ip6tables NAT table is accessible, False otherwise
+            Tuple of (is_available, firewall_type) where firewall_type is "nftables" or "ip6tables"
         """
+        # First, try nftables (modern OpenWrt 22+)
         try:
-            # Try to access the NAT table - this will fail if not available
+            result = subprocess.run(
+                [cfg.CMD_NFT, "list", "table", "ip6", "nat"],
+                capture_output=True,
+                timeout=2,
+            )
+
+            if result.returncode == 0:
+                self.logger.info("✓ IPv6 NAT support detected (nftables)")
+                return (True, "nftables")
+            elif b"No such file or directory" in result.stderr:
+                # nftables exists but no ip6 nat table - need to create it
+                self.logger.info("  nftables found, but ip6 nat table needs initialization")
+                # Try to create the table
+                try:
+                    subprocess.run(
+                        [cfg.CMD_NFT, "add", "table", "ip6", "nat"],
+                        capture_output=True,
+                        timeout=2,
+                        check=True
+                    )
+                    subprocess.run(
+                        [cfg.CMD_NFT, "add", "chain", "ip6", "nat", "POSTROUTING", "{ type nat hook postrouting priority 100 ; }"],
+                        capture_output=True,
+                        timeout=2,
+                        check=True
+                    )
+                    self.logger.info("  ✓ Created ip6 nat table and POSTROUTING chain")
+                    return (True, "nftables")
+                except subprocess.CalledProcessError as e:
+                    self.logger.info(f"  Failed to create ip6 nat table: {e}")
+
+        except FileNotFoundError:
+            self.logger.info("  nft command not found - trying legacy ip6tables")
+        except Exception as e:
+            self.logger.info(f"  nftables check failed: {e}")
+
+        # Fall back to legacy ip6tables (OpenWrt 19.07 and older)
+        try:
             result = subprocess.run(
                 [cfg.CMD_IP6TABLES, "-t", "nat", "-L"],
                 capture_output=True,
@@ -928,16 +973,19 @@ class SimpleGateway:
             )
 
             if result.returncode == 0:
-                self.logger.info("✓ IPv6 NAT support detected and functional")
-                return True
+                self.logger.info("✓ IPv6 NAT support detected (legacy ip6tables)")
+                return (True, "ip6tables")
             else:
                 error_msg = result.stderr.decode().strip()
-                self.logger.info(f"IPv6 NAT not available: {error_msg}")
-                return False
+                self.logger.info(f"  ip6tables NAT not available: {error_msg}")
+                return (False, "none")
 
         except FileNotFoundError:
-            self.logger.info("ip6tables command not found - IPv6 NAT not available")
-            return False
+            self.logger.info("  ip6tables command not found - IPv6 NAT not available")
+            return (False, "none")
+        except Exception as e:
+            self.logger.info(f"  ip6tables check failed: {e}")
+            return (False, "none")
         except Exception as e:
             self.logger.debug(f"IPv6 NAT check failed: {e}")
             return False
@@ -945,6 +993,8 @@ class SimpleGateway:
     def _setup_ipv6_proxy(self, mac: str, lan_ip: str, wan_ipv6: str):
         """
         Setup IPv6→IPv4 proxy using socat with SNAT for return traffic
+
+        Supports both nftables (OpenWrt 22+) and legacy ip6tables (OpenWrt 19.07)
 
         SNAT ensures the device sees connections from the gateway (192.168.1.1)
         instead of random IPv6 addresses, which improves compatibility.
@@ -955,27 +1005,9 @@ class SimpleGateway:
         self.logger.info(f"Device MAC:      {mac}")
         self.logger.info(f"Device LAN IP:   {lan_ip}")
         self.logger.info(f"Router WAN IPv6: {wan_ipv6}")
+        self.logger.info(f"Firewall Type:   {self.ipv6_firewall_type}")
         self.logger.info(f"Proxy Ports:     {cfg.IPV6_PROXY_PORTS}")
         self.logger.info("")
-
-        # Check if IPv6 NAT is available
-        try:
-            result = subprocess.run(
-                [cfg.CMD_IP6TABLES, "-t", "nat", "-L"],
-                capture_output=True,
-                timeout=2,
-            )
-            if result.returncode != 0:
-                self.logger.error("IPv6 NAT (ip6tables -t nat) is NOT available!")
-                self.logger.error("IPv6 proxy will NOT work without IPv6 NAT support.")
-                self.logger.error(
-                    "Install with: opkg install kmod-ipt-nat6 ip6tables-mod-nat"
-                )
-                return
-            self.logger.info("✓ IPv6 NAT support detected")
-        except Exception as e:
-            self.logger.error(f"Failed to check IPv6 NAT support: {e}")
-            return
 
         # Check if socat is available
         if not os.path.exists(cfg.CMD_SOCAT):
@@ -1001,17 +1033,94 @@ class SimpleGateway:
             )
 
             try:
-                # Step 1: Add ip6tables SNAT rule for return traffic
-                self.logger.info(f"  Step 1: Adding ip6tables SNAT rule...")
+                # Step 1: Add firewall SNAT rule for return traffic
+                self.logger.info(f"  Step 1: Adding SNAT rule ({self.ipv6_firewall_type})...")
 
-                # Remove existing rule (if any)
-                try:
+                if self.ipv6_firewall_type == "nftables":
+                    # Modern nftables approach
+                    # First, check if rule exists
+                    check_result = subprocess.run(
+                        [
+                            cfg.CMD_NFT,
+                            "list", "chain", "ip6", "nat", "POSTROUTING"
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=2,
+                    )
+
+                    # Build the rule description to check for existing rule
+                    rule_pattern = f"ip6 daddr {lan_ip} tcp dport {device_port}"
+
+                    if rule_pattern in check_result.stdout:
+                        # Remove old rule by flushing and re-adding (simpler than finding handle)
+                        self.logger.info(f"    Removing old SNAT rule...")
+                        # Delete by matching criteria (nft will find and delete)
+                        subprocess.run(
+                            [
+                                cfg.CMD_NFT,
+                                "delete", "rule", "ip6", "nat", "POSTROUTING",
+                                "ip6", "daddr", lan_ip,
+                                "tcp", "dport", str(device_port),
+                                "snat", "to", cfg.LAN_GATEWAY_IP
+                            ],
+                            capture_output=True,
+                            timeout=2,
+                        )
+
+                    # Add new SNAT rule
+                    subprocess.run(
+                        [
+                            cfg.CMD_NFT,
+                            "add", "rule", "ip6", "nat", "POSTROUTING",
+                            "ip6", "daddr", lan_ip,
+                            "tcp", "dport", str(device_port),
+                            "snat", "to", cfg.LAN_GATEWAY_IP
+                        ],
+                        check=True,
+                        timeout=5,
+                    )
+
+                    self.logger.info(
+                        f"    ✓ nftables SNAT rule added: {lan_ip}:{device_port} → {cfg.LAN_GATEWAY_IP}"
+                    )
+
+                elif self.ipv6_firewall_type == "ip6tables":
+                    # Legacy ip6tables approach
+                    # Remove existing rule (if any)
+                    try:
+                        subprocess.run(
+                            [
+                                cfg.CMD_IP6TABLES,
+                                "-t",
+                                "nat",
+                                "-D",
+                                "POSTROUTING",
+                                "-d",
+                                lan_ip,
+                                "-p",
+                                "tcp",
+                                "--dport",
+                                str(device_port),
+                                "-j",
+                                "SNAT",
+                                "--to-source",
+                                cfg.LAN_GATEWAY_IP,
+                            ],
+                            capture_output=True,
+                            timeout=2,
+                        )
+                        self.logger.info(f"    Removed old SNAT rule")
+                    except:
+                        self.logger.info(f"    No existing SNAT rule to remove")
+
+                    # Add SNAT rule for this port
                     subprocess.run(
                         [
                             cfg.CMD_IP6TABLES,
                             "-t",
                             "nat",
-                            "-D",
+                            "-A",
                             "POSTROUTING",
                             "-d",
                             lan_ip,
@@ -1024,39 +1133,16 @@ class SimpleGateway:
                             "--to-source",
                             cfg.LAN_GATEWAY_IP,
                         ],
-                        capture_output=True,
-                        timeout=2,
+                        check=True,
+                        timeout=5,
                     )
-                    self.logger.info(f"    Removed old SNAT rule")
-                except:
-                    self.logger.info(f"    No existing SNAT rule to remove")
 
-                # Add SNAT rule for this port
-                subprocess.run(
-                    [
-                        cfg.CMD_IP6TABLES,
-                        "-t",
-                        "nat",
-                        "-A",
-                        "POSTROUTING",
-                        "-d",
-                        lan_ip,
-                        "-p",
-                        "tcp",
-                        "--dport",
-                        str(device_port),
-                        "-j",
-                        "SNAT",
-                        "--to-source",
-                        cfg.LAN_GATEWAY_IP,
-                    ],
-                    check=True,
-                    timeout=5,
-                )
+                    self.logger.info(
+                        f"    ✓ ip6tables SNAT rule added: {lan_ip}:{device_port} → {cfg.LAN_GATEWAY_IP}"
+                    )
 
-                self.logger.info(
-                    f"    ✓ SNAT rule added: {lan_ip}:{device_port} → {cfg.LAN_GATEWAY_IP}"
-                )
+                else:
+                    raise Exception(f"Unknown firewall type: {self.ipv6_firewall_type}")
 
                 # Step 2: Start socat proxy
                 self.logger.info(f"  Step 2: Starting socat proxy...")
@@ -1092,7 +1178,7 @@ class SimpleGateway:
                     failed_ports.append((ipv6_port, device_port, "Process died"))
 
             except subprocess.CalledProcessError as e:
-                error_msg = f"ip6tables command failed: {e}"
+                error_msg = f"Firewall command failed: {e}"
                 self.logger.error(f"  ❌ FAILED: {error_msg}")
                 self.logger.error(
                     f"     Hint: Install IPv6 NAT support with: opkg install kmod-ipt-nat6"
@@ -1162,32 +1248,59 @@ class SimpleGateway:
 
         self.logger.info("")
 
-        # Validation: Check ip6tables SNAT rules
-        self.logger.info("Validating ip6tables SNAT rules...")
+        # Validation: Check firewall SNAT rules
+        self.logger.info(f"Validating {self.ipv6_firewall_type} SNAT rules...")
         try:
-            result = subprocess.run(
-                [cfg.CMD_IP6TABLES, "-t", "nat", "-L", "POSTROUTING", "-n", "-v"],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
+            if self.ipv6_firewall_type == "nftables":
+                result = subprocess.run(
+                    [cfg.CMD_NFT, "list", "chain", "ip6", "nat", "POSTROUTING"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
 
-            if result.returncode == 0:
-                snat_lines = [
-                    line
-                    for line in result.stdout.split("\n")
-                    if "SNAT" in line and lan_ip in line
-                ]
-                if snat_lines:
-                    self.logger.info(
-                        f"✓ Found {len(snat_lines)} SNAT rule(s) for {lan_ip}:"
-                    )
-                    for line in snat_lines:
-                        self.logger.info(f"  {line.strip()}")
+                if result.returncode == 0:
+                    snat_lines = [
+                        line
+                        for line in result.stdout.split("\n")
+                        if "snat" in line.lower() and lan_ip in line
+                    ]
+                    if snat_lines:
+                        self.logger.info(
+                            f"✓ Found {len(snat_lines)} SNAT rule(s) for {lan_ip}:"
+                        )
+                        for line in snat_lines:
+                            self.logger.info(f"  {line.strip()}")
+                    else:
+                        self.logger.warning(f"⚠ No SNAT rules found for {lan_ip}")
                 else:
-                    self.logger.warning(f"⚠ No SNAT rules found for {lan_ip}")
-            else:
-                self.logger.warning("⚠ Could not list ip6tables SNAT rules")
+                    self.logger.warning("⚠ Could not list nftables rules")
+
+            elif self.ipv6_firewall_type == "ip6tables":
+                result = subprocess.run(
+                    [cfg.CMD_IP6TABLES, "-t", "nat", "-L", "POSTROUTING", "-n", "-v"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+
+                if result.returncode == 0:
+                    snat_lines = [
+                        line
+                        for line in result.stdout.split("\n")
+                        if "SNAT" in line and lan_ip in line
+                    ]
+                    if snat_lines:
+                        self.logger.info(
+                            f"✓ Found {len(snat_lines)} SNAT rule(s) for {lan_ip}:"
+                        )
+                        for line in snat_lines:
+                            self.logger.info(f"  {line.strip()}")
+                    else:
+                        self.logger.warning(f"⚠ No SNAT rules found for {lan_ip}")
+                else:
+                    self.logger.warning("⚠ Could not list ip6tables rules")
+
         except Exception as e:
             self.logger.warning(f"Could not validate SNAT rules: {e}")
 
@@ -1200,35 +1313,56 @@ class SimpleGateway:
         """Stop all socat proxies and remove IPv6 SNAT rules"""
         self.logger.info("Stopping IPv6 proxies and cleaning up SNAT rules")
 
-        # Remove IPv6 SNAT rules first
-        if self.device and self.device.lan_ipv4:
+        # Remove IPv6 SNAT rules first (if we have device info and firewall type)
+        if self.device and self.device.lan_ipv4 and self.ipv6_firewall_type:
             lan_ip = self.device.lan_ipv4
+
             for device_port in cfg.IPV6_PROXY_PORTS.values():
                 try:
-                    subprocess.run(
-                        [
-                            "ip6tables",
-                            "-t",
-                            "nat",
-                            "-D",
-                            "POSTROUTING",
-                            "-d",
-                            lan_ip,
-                            "-p",
-                            "tcp",
-                            "--dport",
-                            str(device_port),
-                            "-j",
-                            "SNAT",
-                            "--to-source",
-                            cfg.LAN_GATEWAY_IP,
-                        ],
-                        capture_output=True,
-                        timeout=2,
-                    )
-                    self.logger.info(
-                        f"Removed IPv6 SNAT rule for {lan_ip}:{device_port}"
-                    )
+                    if self.ipv6_firewall_type == "nftables":
+                        # Modern nftables removal
+                        subprocess.run(
+                            [
+                                cfg.CMD_NFT,
+                                "delete", "rule", "ip6", "nat", "POSTROUTING",
+                                "ip6", "daddr", lan_ip,
+                                "tcp", "dport", str(device_port),
+                                "snat", "to", cfg.LAN_GATEWAY_IP
+                            ],
+                            capture_output=True,
+                            timeout=2,
+                        )
+                        self.logger.info(
+                            f"Removed nftables SNAT rule for {lan_ip}:{device_port}"
+                        )
+
+                    elif self.ipv6_firewall_type == "ip6tables":
+                        # Legacy ip6tables removal
+                        subprocess.run(
+                            [
+                                cfg.CMD_IP6TABLES,
+                                "-t",
+                                "nat",
+                                "-D",
+                                "POSTROUTING",
+                                "-d",
+                                lan_ip,
+                                "-p",
+                                "tcp",
+                                "--dport",
+                                str(device_port),
+                                "-j",
+                                "SNAT",
+                                "--to-source",
+                                cfg.LAN_GATEWAY_IP,
+                            ],
+                            capture_output=True,
+                            timeout=2,
+                        )
+                        self.logger.info(
+                            f"Removed ip6tables SNAT rule for {lan_ip}:{device_port}"
+                        )
+
                 except Exception as e:
                     self.logger.debug(
                         f"Failed to remove SNAT rule for port {device_port}: {e}"
