@@ -76,6 +76,10 @@ class SimpleGateway:
         self.state_file = cfg.STATE_FILE
         self.running = False
 
+        # Track link states for cable detection
+        self.wan_link_up: Optional[bool] = None
+        self.lan_link_up: Optional[bool] = None
+
     def initialize(self) -> bool:
         """Initialize gateway"""
         self.logger.info("Initializing Simple Gateway (Single Device Mode)")
@@ -97,6 +101,19 @@ class SimpleGateway:
         """Start gateway service - main loop"""
         self.running = True
         self.logger.info("Gateway started - monitoring for single device")
+
+        # IMPORTANT: Run initial discovery immediately!
+        # This detects devices already connected BEFORE service started
+        self.logger.info("Running initial device discovery...")
+        initial_device = self._discover_device()
+        if initial_device:
+            mac, lan_ip = initial_device
+            self.logger.info(f"Found device already connected: {mac} at {lan_ip}")
+            # Configure immediately (blocking, not threaded for first device)
+            self._configure_device(mac, lan_ip)
+        else:
+            self.logger.info("No devices found during initial discovery")
+            self.logger.info("Waiting for device to connect to eth1...")
 
         try:
             while self.running:
@@ -162,6 +179,9 @@ class SimpleGateway:
                             daemon=True,
                         )
                         reconfig_thread.start()
+
+                # Check for cable unplug/replug events
+                self._check_link_states()
 
                 # Sleep before next check
                 time.sleep(cfg.CHECK_INTERVAL)
@@ -557,7 +577,10 @@ class SimpleGateway:
         Setup IPv4 NAT forwarding (TCP ports + ICMP)
         This makes the WAN IP behave exactly like the device's own IP
         """
-        self.logger.info(f"Setting up IPv4 forwarding for {lan_ip}")
+        self.logger.info(f"═══ Setting up IPv4 Port Forwarding ═══")
+        self.logger.info(f"  Device LAN IP: {lan_ip}")
+        self.logger.info(f"  Device WAN IP: {wan_ip}")
+        self.logger.info(f"  Total ports to forward: {len(cfg.PORT_FORWARDS)}")
 
         # Forward ICMP (ping) to device - makes WAN IP truly transparent
         try:
@@ -621,13 +644,21 @@ class SimpleGateway:
                 )
 
                 self.logger.info(
-                    f"ICMP forward: {wan_ip} (ping) → {lan_ip} (transparent)"
+                    f"  ✓ ICMP forward: {wan_ip} (ping) → {lan_ip} (transparent)"
+                )
+            else:
+                self.logger.info(
+                    f"  ↻ ICMP forward already exists: {wan_ip} → {lan_ip}"
                 )
 
         except subprocess.CalledProcessError as e:
-            self.logger.warning(f"Failed to setup ICMP forwarding: {e}")
+            self.logger.error(f"  ✗ Failed to setup ICMP forwarding: {e}")
 
         # Forward TCP ports to device
+        ports_added = 0
+        ports_existed = 0
+        ports_failed = 0
+
         for gateway_port, device_port in cfg.PORT_FORWARDS.items():
             try:
                 # Check if rule exists
@@ -696,11 +727,27 @@ class SimpleGateway:
                     )
 
                     self.logger.info(
-                        f"Port forward: {wan_ip}:{gateway_port} → {lan_ip}:{device_port}"
+                        f"  ✓ Port {gateway_port:5d} → {lan_ip}:{device_port:5d} (ADDED)"
                     )
+                    ports_added += 1
+                else:
+                    self.logger.info(
+                        f"  ↻ Port {gateway_port:5d} → {lan_ip}:{device_port:5d} (EXISTS)"
+                    )
+                    ports_existed += 1
 
             except subprocess.CalledProcessError as e:
-                self.logger.warning(f"Failed to setup port forward {gateway_port}: {e}")
+                self.logger.error(
+                    f"  ✗ Port {gateway_port:5d} → {lan_ip}:{device_port:5d} (FAILED: {e})"
+                )
+                ports_failed += 1
+
+        # Summary
+        self.logger.info(f"═══ Port Forwarding Summary ═══")
+        self.logger.info(f"  Added:   {ports_added}")
+        self.logger.info(f"  Existed: {ports_existed}")
+        self.logger.info(f"  Failed:  {ports_failed}")
+        self.logger.info(f"═══════════════════════════════")
 
     def _check_ipv6_nat_support(self) -> bool:
         """
@@ -1155,6 +1202,141 @@ class SimpleGateway:
                     )
         except Exception as e:
             self.logger.warning(f"Failed to load state: {e}")
+
+    def _check_link_states(self):
+        """
+        Check for cable unplug/replug events on LAN and WAN interfaces.
+        Triggers immediate discovery/reconfiguration on link state changes.
+        """
+        try:
+            # Check WAN link state
+            wan_link = self._get_link_state(self.wan_interface)
+            if wan_link is not None:
+                if self.wan_link_up is None:
+                    # First check - just record state
+                    self.wan_link_up = wan_link
+                    status = "UP" if wan_link else "DOWN"
+                    self.logger.info(
+                        f"WAN ({self.wan_interface}) initial link state: {status}"
+                    )
+                elif self.wan_link_up != wan_link:
+                    # Link state changed!
+                    old_state = "UP" if self.wan_link_up else "DOWN"
+                    new_state = "UP" if wan_link else "DOWN"
+                    self.logger.warning(
+                        f"🔌 WAN cable event: {old_state} → {new_state} on {self.wan_interface}"
+                    )
+                    self.wan_link_up = wan_link
+
+                    if wan_link:
+                        # Cable plugged back in - trigger WAN reconfiguration
+                        if self.device and self.device.status == "configured":
+                            self.logger.info(
+                                "WAN cable reconnected - initiating fast reconfiguration..."
+                            )
+                            reconfig_thread = threading.Thread(
+                                target=self._configure_device,
+                                args=(
+                                    self.device.mac_address,
+                                    self.device.lan_ipv4,
+                                    True,
+                                ),
+                                daemon=True,
+                            )
+                            reconfig_thread.start()
+                    else:
+                        # Cable unplugged
+                        self.logger.warning(
+                            "WAN cable unplugged - device will lose WAN connectivity"
+                        )
+
+            # Check LAN link state
+            lan_link = self._get_link_state(self.lan_interface)
+            if lan_link is not None:
+                if self.lan_link_up is None:
+                    # First check - just record state
+                    self.lan_link_up = lan_link
+                    status = "UP" if lan_link else "DOWN"
+                    self.logger.info(
+                        f"LAN ({self.lan_interface}) initial link state: {status}"
+                    )
+                elif self.lan_link_up != lan_link:
+                    # Link state changed!
+                    old_state = "UP" if self.lan_link_up else "DOWN"
+                    new_state = "UP" if lan_link else "DOWN"
+                    self.logger.warning(
+                        f"🔌 LAN cable event: {old_state} → {new_state} on {self.lan_interface}"
+                    )
+                    self.lan_link_up = lan_link
+
+                    if lan_link:
+                        # Cable plugged back in - trigger device discovery
+                        self.logger.info(
+                            "LAN cable reconnected - running immediate device discovery..."
+                        )
+                        # Give device a moment to get DHCP
+                        time.sleep(1)
+                        device_info = self._discover_device()
+                        if device_info:
+                            mac, lan_ip = device_info
+                            if not self.device or self.device.mac_address != mac:
+                                self.logger.info(
+                                    f"Device detected after LAN reconnect: {mac} at {lan_ip}"
+                                )
+                                config_thread = threading.Thread(
+                                    target=self._configure_device,
+                                    args=(mac, lan_ip),
+                                    daemon=True,
+                                )
+                                config_thread.start()
+                    else:
+                        # Cable unplugged
+                        if self.device:
+                            self.logger.warning(
+                                f"LAN cable unplugged - device {self.device.mac_address} will disconnect shortly"
+                            )
+
+        except Exception as e:
+            self.logger.debug(f"Error checking link states: {e}")
+
+    def _get_link_state(self, interface: str) -> Optional[bool]:
+        """
+        Get link state of interface (cable plugged in or not).
+
+        Returns:
+            True if link is up (cable connected)
+            False if link is down (cable disconnected)
+            None if unable to determine
+        """
+        try:
+            result = subprocess.run(
+                [cfg.CMD_IP, "link", "show", interface],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=2,
+            )
+
+            # Check for state flags
+            # Output contains: "state UP" or "state DOWN"
+            if "state UP" in result.stdout:
+                return True
+            elif "state DOWN" in result.stdout:
+                return False
+
+            # Fallback: check for NO-CARRIER flag
+            if "NO-CARRIER" in result.stdout:
+                return False
+
+            # Check for LOWER_UP flag (link layer is up)
+            if "LOWER_UP" in result.stdout:
+                return True
+
+            return None
+
+        except Exception as e:
+            self.logger.debug(f"Failed to get link state for {interface}: {e}")
+            return None
 
     def _cleanup_device(self):
         """Clean up when device disconnects"""
