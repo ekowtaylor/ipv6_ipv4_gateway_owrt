@@ -986,9 +986,6 @@ class SimpleGateway:
         except Exception as e:
             self.logger.info(f"  ip6tables check failed: {e}")
             return (False, "none")
-        except Exception as e:
-            self.logger.debug(f"IPv6 NAT check failed: {e}")
-            return False
 
     def _setup_ipv6_proxy(self, mac: str, lan_ip: str, wan_ipv6: str):
         """
