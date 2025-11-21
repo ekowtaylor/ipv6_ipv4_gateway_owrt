@@ -105,6 +105,11 @@ class SimpleGateway:
         # IMPORTANT: Run initial discovery immediately!
         # This detects devices already connected BEFORE service started
         self.logger.info("Running initial device discovery...")
+
+        # First, trigger ARP population by pinging the LAN subnet
+        # This ensures devices already connected (but idle) appear in ARP table
+        self._populate_arp_table()
+
         initial_device = self._discover_device()
         if initial_device:
             mac, lan_ip = initial_device
@@ -208,6 +213,42 @@ class SimpleGateway:
             self._stop_proxy(self.device.mac_address)
 
         self.logger.info("Gateway stopped")
+
+    def _populate_arp_table(self):
+        """
+        Trigger ARP table population by pinging LAN subnet.
+
+        This ensures devices that are already connected (but idle) appear in ARP table.
+        Without this, devices that haven't sent packets won't be discoverable.
+        """
+        self.logger.info("Populating ARP table by pinging LAN subnet...")
+
+        try:
+            # Get gateway IP network (192.168.1.0/24)
+            # We'll ping a few common IPs to trigger ARP responses
+            base_ip = cfg.LAN_GATEWAY_IP.rsplit(".", 1)[0]  # "192.168.1"
+
+            # Ping a small range of likely IPs (100-110) to speed up discovery
+            # Most DHCP servers start at .100
+            for i in range(100, 111):
+                ip = f"{base_ip}.{i}"
+                if ip == cfg.LAN_GATEWAY_IP:
+                    continue  # Skip gateway itself
+
+                # Quick ping (1 packet, 0.5s timeout, no wait for response)
+                subprocess.run(
+                    ["ping", "-c", "1", "-W", "1", "-q", ip],
+                    capture_output=True,
+                    timeout=2,
+                )
+
+            # Give ARP table a moment to populate
+            time.sleep(0.5)
+            self.logger.info("ARP table populated")
+
+        except Exception as e:
+            self.logger.debug(f"Error populating ARP table: {e}")
+            # Non-fatal - discovery will still work if device sends traffic
 
     def _discover_device(self) -> Optional[tuple[str, str]]:
         """
@@ -457,11 +498,42 @@ class SimpleGateway:
                 self.logger.warning(f"Failed to enable IPv6 RA: {e}")
                 self.logger.warning("SLAAC may not work - continuing anyway")
 
+            # Step 7: Force link down/up cycle to clear upstream router caches
+            # This is CRITICAL! The upstream router needs to see the link go down
+            # to reset its RA cache and recognize the new MAC address
+            self.logger.info("Forcing link cycle to reset upstream router cache...")
+            try:
+                # Down
+                subprocess.run(
+                    [cfg.CMD_IP, "link", "set", self.wan_interface, "down"],
+                    check=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+
+                # Wait a moment (give upstream router time to detect link down)
+                time.sleep(1)
+
+                # Up
+                subprocess.run(
+                    [cfg.CMD_IP, "link", "set", self.wan_interface, "up"],
+                    check=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+
+                self.logger.info(
+                    "✓ Link cycle complete - upstream router should send fresh RAs"
+                )
+
+            except subprocess.CalledProcessError as e:
+                self.logger.warning(f"Failed to cycle link: {e}")
+
             # Wait for interface to come up and link negotiation
-            # Fast mode: 0.5s (MAC already registered, just need link up)
-            # Normal mode: 2s (wait for link negotiation + firewall registration)
-            wait_time = 0.5 if fast_mode else 2
-            self.logger.info(f"Waiting {wait_time}s for interface to come up...")
+            # Fast mode: 2s (MAC already registered, but need fresh RAs)
+            # Normal mode: 3s (wait for link negotiation + firewall registration + RAs)
+            wait_time = 2 if fast_mode else 3
+            self.logger.info(f"Waiting {wait_time}s for link negotiation and RAs...")
             time.sleep(wait_time)
 
             # Verify MAC was set correctly
@@ -626,6 +698,57 @@ class SimpleGateway:
         self.logger.info(f"  Device LAN IP: {lan_ip}")
         self.logger.info(f"  Device WAN IP: {wan_ip}")
         self.logger.info(f"  Total ports to forward: {len(cfg.PORT_FORWARDS)}")
+
+        # CRITICAL: Add MASQUERADE for return traffic from LAN to WAN
+        # Without this, device replies with source=192.168.1.x instead of WAN IP
+        # and upstream router rejects it
+        try:
+            # Check if MASQUERADE rule exists
+            check = subprocess.run(
+                [
+                    cfg.CMD_IPTABLES,
+                    "-t",
+                    "nat",
+                    "-C",
+                    "POSTROUTING",
+                    "-s",
+                    f"{cfg.LAN_GATEWAY_IP.rsplit('.', 1)[0]}.0/24",  # 192.168.1.0/24
+                    "-o",
+                    self.wan_interface,
+                    "-j",
+                    "MASQUERADE",
+                ],
+                capture_output=True,
+            )
+
+            if check.returncode != 0:
+                # Add MASQUERADE rule for LAN→WAN traffic
+                subprocess.run(
+                    [
+                        cfg.CMD_IPTABLES,
+                        "-t",
+                        "nat",
+                        "-A",
+                        "POSTROUTING",
+                        "-s",
+                        f"{cfg.LAN_GATEWAY_IP.rsplit('.', 1)[0]}.0/24",  # 192.168.1.0/24
+                        "-o",
+                        self.wan_interface,
+                        "-j",
+                        "MASQUERADE",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                self.logger.info(
+                    f"  ✓ MASQUERADE: LAN traffic → {self.wan_interface} (return path fixed)"
+                )
+            else:
+                self.logger.info(f"  ↻ MASQUERADE already exists for LAN → WAN")
+
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"  ✗ Failed to setup MASQUERADE: {e}")
+            self.logger.error("  WARNING: Return traffic may not work!")
 
         # Forward ICMP (ping) to device - makes WAN IP truly transparent
         try:
