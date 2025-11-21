@@ -52,24 +52,39 @@ if [ -x "$INIT_SCRIPT" ]; then
     "$INIT_SCRIPT" disable 2>/dev/null || true
 fi
 
-# Restore original MAC address
+# Restore original MAC address via UCI (OpenWrt-compatible)
 echo "- Restoring original MAC address (if saved)..."
 if [ -f "$CONFIG_DIR/original_wan_mac.txt" ]; then
     ORIGINAL_MAC=$(cat "$CONFIG_DIR/original_wan_mac.txt")
     echo "  Found saved MAC: $ORIGINAL_MAC"
 
+    # Remove MAC override from UCI (restore to default)
+    echo "  Removing MAC override from UCI..."
+    uci delete network.wan.macaddr 2>/dev/null || true
+    uci commit network 2>/dev/null || true
+
+    # Manually set it as fallback (in case UCI doesn't work)
     ip link set eth0 down 2>/dev/null || true
     ip link set eth0 address "$ORIGINAL_MAC" 2>/dev/null || true
     ip link set eth0 up 2>/dev/null || true
 
+    # Reload WAN interface to apply UCI changes
+    echo "  Reloading WAN interface..."
+    ifdown wan 2>/dev/null || true
+    sleep 1
+    ifup wan 2>/dev/null || true
+    sleep 2
+
+    # Verify restoration
     NEW_MAC=$(ip link show eth0 | grep -o 'link/ether [^ ]*' | awk '{print $2}')
     if [ "$NEW_MAC" = "$ORIGINAL_MAC" ]; then
         echo "  ✓ Restored original MAC: $ORIGINAL_MAC"
     else
-        echo "  ⚠ Failed to restore MAC (may require reboot)"
+        echo "  ⚠ MAC is now: $NEW_MAC (may differ from original)"
+        echo "  Note: This may be normal if device has factory MAC in flash"
     fi
 else
-    echo "  (No saved MAC found - may need manual restore)"
+    echo "  (No saved MAC found - leaving current MAC unchanged)"
 fi
 
 # Kill Python service
@@ -173,18 +188,30 @@ EOF
     fi
     uci commit firewall
 
-    # Remove our sysctl entries
-    echo "- Cleaning up sysctl config..."
+    # Remove our sysctl entries EXCEPT IPv6 enablement
+    echo "- Cleaning up sysctl config (keeping IPv6 enabled)..."
     if [ -f /etc/sysctl.conf ]; then
+        # Remove only IP forwarding entries, NOT IPv6 disable_ipv6 settings
+        # We want IPv6 to STAY ENABLED even after uninstall
         sed -i '/# Gateway IP forwarding/d' /etc/sysctl.conf
         sed -i '/net.ipv4.ip_forward=1/d' /etc/sysctl.conf
         sed -i '/net.ipv6.conf.all.forwarding=1/d' /etc/sysctl.conf
+        # DO NOT remove these - keep IPv6 enabled:
+        # - net.ipv6.conf.all.disable_ipv6=0
+        # - net.ipv6.conf.default.disable_ipv6=0
+        # - net.ipv6.conf.eth0.disable_ipv6=0
     fi
 
-    # Disable IP forwarding
-    echo "- Disabling IP forwarding..."
+    # Disable IP forwarding (but keep IPv6 enabled!)
+    echo "- Disabling IP forwarding (IPv6 stays enabled)..."
     echo 0 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
     echo 0 > /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || true
+
+    # Keep IPv6 enabled (do NOT disable it)
+    echo "- Ensuring IPv6 remains enabled..."
+    echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || true
+    echo 0 > /proc/sys/net/ipv6/conf/default/disable_ipv6 2>/dev/null || true
+    echo 0 > /proc/sys/net/ipv6/conf/eth0/disable_ipv6 2>/dev/null || true
 
     # Clean up iptables rules added by gateway
     echo "- Cleaning up iptables rules..."

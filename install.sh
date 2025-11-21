@@ -441,11 +441,23 @@ else
     echo "  /etc/init.d/$SERVICE_NAME start"
 fi
 echo ""
-
 echo "========================================="
 echo " Installation Complete!"
 echo "========================================="
 echo ""
+
+# Save original WAN MAC address for uninstall
+echo "Saving original WAN MAC address..."
+ORIGINAL_WAN_MAC=$(ip link show eth0 | grep -o 'link/ether [^ ]*' | awk '{print $2}')
+if [ -n "$ORIGINAL_WAN_MAC" ]; then
+    mkdir -p "$CONFIG_DIR"
+    echo "$ORIGINAL_WAN_MAC" > "$CONFIG_DIR/original_wan_mac.txt"
+    echo "  Original MAC saved: $ORIGINAL_WAN_MAC"
+else
+    echo "  ⚠ Could not detect original MAC - may need manual restore on uninstall"
+fi
+echo ""
+
 echo "Quick Start:"
 echo "  1. Connect device to eth1 (LAN)"
 echo "  2. Device will get 192.168.1.x via DHCP"

@@ -406,7 +406,7 @@ class SimpleGateway:
 
     def _spoof_mac(self, mac: str, fast_mode: bool = False) -> bool:
         """
-        Spoof MAC on WAN interface
+        Spoof MAC on WAN interface using UCI (OpenWrt-compatible)
 
         Args:
             mac: MAC address to spoof
@@ -415,14 +415,33 @@ class SimpleGateway:
         self.logger.info(f"Spoofing WAN MAC to {mac}")
 
         try:
-            # Step 1: Bring interface down
+            # CRITICAL: On OpenWrt, we MUST use UCI to set MAC
+            # Otherwise netifd will override our changes!
+
+            # Step 1: Set MAC in UCI configuration
+            self.logger.info(f"Setting MAC in UCI (OpenWrt network config)...")
+            subprocess.run(
+                ["uci", "set", f"network.wan.macaddr={mac}"],
+                check=True,
+                capture_output=True,
+            )
+
+            # Commit UCI changes
+            subprocess.run(
+                ["uci", "commit", "network"],
+                check=True,
+                capture_output=True,
+            )
+            self.logger.info(f"✓ MAC set in UCI configuration")
+
+            # Step 2: Bring interface down (manually, before netifd reload)
             subprocess.run(
                 [cfg.CMD_IP, "link", "set", self.wan_interface, "down"],
                 check=True,
                 capture_output=True,
             )
 
-            # Step 2: Flush ALL IPv6 addresses from interface (critical!)
+            # Step 3: Flush ALL IPv6 addresses from interface (critical!)
             # This removes old SLAAC addresses generated from previous MAC
             subprocess.run(
                 [cfg.CMD_IP, "-6", "addr", "flush", "dev", self.wan_interface],
@@ -431,27 +450,22 @@ class SimpleGateway:
             )
             self.logger.info(f"Flushed old IPv6 addresses from {self.wan_interface}")
 
-            # Step 3: Flush IPv4 addresses too
+            # Step 4: Flush IPv4 addresses too
             subprocess.run(
                 [cfg.CMD_IP, "-4", "addr", "flush", "dev", self.wan_interface],
                 check=True,
                 capture_output=True,
             )
 
-            # Step 4: Set new MAC
+            # Step 5: Reload network interface (let netifd apply the new MAC from UCI)
+            self.logger.info(f"Reloading WAN interface via ifup...")
             subprocess.run(
-                [cfg.CMD_IP, "link", "set", self.wan_interface, "address", mac],
+                ["ifup", "wan"],
                 check=True,
                 capture_output=True,
+                timeout=10,
             )
-            self.logger.info(f"Set WAN MAC to {mac}")
-
-            # Step 5: Bring interface up
-            subprocess.run(
-                [cfg.CMD_IP, "link", "set", self.wan_interface, "up"],
-                check=True,
-                capture_output=True,
-            )
+            self.logger.info(f"✓ WAN interface reloaded with new MAC")
 
             # Step 6: Enable IPv6 on interface (critical for SLAAC!)
             self.logger.info("Enabling IPv6 and Router Advertisement acceptance...")
