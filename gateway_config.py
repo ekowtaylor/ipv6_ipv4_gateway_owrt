@@ -16,10 +16,10 @@ LAN_INTERFACE = "eth1"  # Device side
 LAN_GATEWAY_IP = "192.168.1.1"
 
 # Logging
-LOG_FILE = "/var/log/ipv4-ipv6-gateway.log"
+LOG_FILE = "/tmp/ipv4-ipv6-gateway-test.log"  # Use /tmp for testing
 
 # State file (stores current device info)
-STATE_FILE = "/etc/ipv4-ipv6-gateway/device.json"
+STATE_FILE = "/tmp/ipv4-ipv6-gateway-test/device.json"  # Use /tmp for testing
 
 # Check interval (seconds)
 CHECK_INTERVAL = 2  # Check for device/WAN changes every 2 seconds (fast detection!)
@@ -93,8 +93,12 @@ def _find_command(preferred_path: str) -> str:
     return preferred_path
 
 
-def validate_config() -> bool:
-    """Validate configuration"""
+def validate_config(skip_missing_commands=False) -> bool:
+    """Validate configuration
+
+    Args:
+        skip_missing_commands: If True, don't raise error for missing commands (for testing)
+    """
     # Create state directory
     Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
 
@@ -118,7 +122,7 @@ def validate_config() -> bool:
         if not os.path.exists(path):
             missing.append(f"{name} (looked for: {path})")
 
-    if missing:
+    if missing and not skip_missing_commands:
         error = "Required commands not found:\n"
         for cmd in missing:
             error += f"  - {cmd}\n"
@@ -128,7 +132,7 @@ def validate_config() -> bool:
         raise RuntimeError(error)
 
     # socat is optional (only needed for IPv6-only networks)
-    if not os.path.exists(CMD_SOCAT):
+    if not os.path.exists(CMD_SOCAT) and not skip_missing_commands:
         print(f"Warning: socat not found ({CMD_SOCAT})")
         print("IPv6→IPv4 proxying will not work without socat")
         print("Install with: opkg install socat")

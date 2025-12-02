@@ -11,6 +11,9 @@ and sets up port forwarding.
 import json
 import logging
 import os
+
+# Validate config (skip command checks if GATEWAY_TEST_MODE is set for testing)
+import os as _os
 import re
 import subprocess
 import sys
@@ -24,8 +27,10 @@ from typing import Optional
 # Import config
 import gateway_config as cfg
 
-# Validate config
-cfg.validate_config()
+if _os.environ.get("GATEWAY_TEST_MODE") == "1":
+    cfg.validate_config(skip_missing_commands=True)
+else:
+    cfg.validate_config()
 
 # Setup logging
 logging.basicConfig(
@@ -939,20 +944,30 @@ class SimpleGateway:
                 return (True, "nftables")
             elif b"No such file or directory" in result.stderr:
                 # nftables exists but no ip6 nat table - need to create it
-                self.logger.info("  nftables found, but ip6 nat table needs initialization")
+                self.logger.info(
+                    "  nftables found, but ip6 nat table needs initialization"
+                )
                 # Try to create the table
                 try:
                     subprocess.run(
                         [cfg.CMD_NFT, "add", "table", "ip6", "nat"],
                         capture_output=True,
                         timeout=2,
-                        check=True
+                        check=True,
                     )
                     subprocess.run(
-                        [cfg.CMD_NFT, "add", "chain", "ip6", "nat", "POSTROUTING", "{ type nat hook postrouting priority 100 ; }"],
+                        [
+                            cfg.CMD_NFT,
+                            "add",
+                            "chain",
+                            "ip6",
+                            "nat",
+                            "POSTROUTING",
+                            "{ type nat hook postrouting priority 100 ; }",
+                        ],
                         capture_output=True,
                         timeout=2,
-                        check=True
+                        check=True,
                     )
                     self.logger.info("  ✓ Created ip6 nat table and POSTROUTING chain")
                     return (True, "nftables")
@@ -1030,91 +1045,41 @@ class SimpleGateway:
             )
 
             try:
-                # Step 1: Add firewall SNAT rule for return traffic
-                self.logger.info(f"  Step 1: Adding SNAT rule ({self.ipv6_firewall_type})...")
+                # Step 1: Add IPv4 SNAT rule for socat→device traffic
+                # CRITICAL: socat translates IPv6→IPv4, so we need IPv4 SNAT!
+                # This rewrites source IP of packets going from gateway to device
+                # so the device sees connections from 192.168.1.1 (gateway) instead of random IPs
+                self.logger.info(
+                    f"  Step 1: Adding IPv4 SNAT rule for proxy traffic..."
+                )
 
-                if self.ipv6_firewall_type == "nftables":
-                    # Modern nftables approach
-                    # First, check if rule exists
-                    check_result = subprocess.run(
-                        [
-                            cfg.CMD_NFT,
-                            "list", "chain", "ip6", "nat", "POSTROUTING"
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=2,
-                    )
+                # Check if IPv4 SNAT rule exists
+                check = subprocess.run(
+                    [
+                        cfg.CMD_IPTABLES,
+                        "-t",
+                        "nat",
+                        "-C",
+                        "POSTROUTING",
+                        "-d",
+                        lan_ip,
+                        "-p",
+                        "tcp",
+                        "--dport",
+                        str(device_port),
+                        "-j",
+                        "SNAT",
+                        "--to-source",
+                        cfg.LAN_GATEWAY_IP,
+                    ],
+                    capture_output=True,
+                )
 
-                    # Build the rule description to check for existing rule
-                    rule_pattern = f"ip6 daddr {lan_ip} tcp dport {device_port}"
-
-                    if rule_pattern in check_result.stdout:
-                        # Remove old rule by flushing and re-adding (simpler than finding handle)
-                        self.logger.info(f"    Removing old SNAT rule...")
-                        # Delete by matching criteria (nft will find and delete)
-                        subprocess.run(
-                            [
-                                cfg.CMD_NFT,
-                                "delete", "rule", "ip6", "nat", "POSTROUTING",
-                                "ip6", "daddr", lan_ip,
-                                "tcp", "dport", str(device_port),
-                                "snat", "to", cfg.LAN_GATEWAY_IP
-                            ],
-                            capture_output=True,
-                            timeout=2,
-                        )
-
-                    # Add new SNAT rule
+                if check.returncode != 0:
+                    # Add IPv4 SNAT rule
                     subprocess.run(
                         [
-                            cfg.CMD_NFT,
-                            "add", "rule", "ip6", "nat", "POSTROUTING",
-                            "ip6", "daddr", lan_ip,
-                            "tcp", "dport", str(device_port),
-                            "snat", "to", cfg.LAN_GATEWAY_IP
-                        ],
-                        check=True,
-                        timeout=5,
-                    )
-
-                    self.logger.info(
-                        f"    ✓ nftables SNAT rule added: {lan_ip}:{device_port} → {cfg.LAN_GATEWAY_IP}"
-                    )
-
-                elif self.ipv6_firewall_type == "ip6tables":
-                    # Legacy ip6tables approach
-                    # Remove existing rule (if any)
-                    try:
-                        subprocess.run(
-                            [
-                                cfg.CMD_IP6TABLES,
-                                "-t",
-                                "nat",
-                                "-D",
-                                "POSTROUTING",
-                                "-d",
-                                lan_ip,
-                                "-p",
-                                "tcp",
-                                "--dport",
-                                str(device_port),
-                                "-j",
-                                "SNAT",
-                                "--to-source",
-                                cfg.LAN_GATEWAY_IP,
-                            ],
-                            capture_output=True,
-                            timeout=2,
-                        )
-                        self.logger.info(f"    Removed old SNAT rule")
-                    except:
-                        self.logger.info(f"    No existing SNAT rule to remove")
-
-                    # Add SNAT rule for this port
-                    subprocess.run(
-                        [
-                            cfg.CMD_IP6TABLES,
+                            cfg.CMD_IPTABLES,
                             "-t",
                             "nat",
                             "-A",
@@ -1133,34 +1098,42 @@ class SimpleGateway:
                         check=True,
                         timeout=5,
                     )
-
                     self.logger.info(
-                        f"    ✓ ip6tables SNAT rule added: {lan_ip}:{device_port} → {cfg.LAN_GATEWAY_IP}"
+                        f"    ✓ IPv4 SNAT rule added: {lan_ip}:{device_port} → {cfg.LAN_GATEWAY_IP}"
                     )
-
                 else:
-                    raise Exception(f"Unknown firewall type: {self.ipv6_firewall_type}")
+                    self.logger.info(
+                        f"    ↻ IPv4 SNAT rule already exists for {lan_ip}:{device_port}"
+                    )
 
                 # Step 2: Start socat proxy
                 self.logger.info(f"  Step 2: Starting socat proxy...")
 
+                # Correct socat syntax for IPv6 bind
                 cmd = [
                     cfg.CMD_SOCAT,
-                    f"TCP6-LISTEN:{ipv6_port},bind=[{wan_ipv6}],fork,reuseaddr",
+                    f"TCP6-LISTEN:{ipv6_port},bind={wan_ipv6},fork,reuseaddr",
                     f"TCP4:{lan_ip}:{device_port}",
                 ]
 
                 self.logger.info(f"    Command: {' '.join(cmd)}")
 
-                # Start in background
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-
-                self.logger.info(f"    ✓ socat started (PID: {proc.pid})")
+                # Create log file for debugging
+                log_file = f"/var/log/socat-ipv6-{ipv6_port}.log"
+                try:
+                    log_fd = open(log_file, "w")
+                    # Start in background with logging
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=log_fd,
+                        stderr=log_fd,
+                        start_new_session=True,
+                    )
+                    self.logger.info(f"    ✓ socat started (PID: {proc.pid})")
+                    self.logger.info(f"    ✓ socat logs: {log_file}")
+                except Exception as e:
+                    self.logger.error(f"    ✗ Failed to start socat: {e}")
+                    raise
 
                 # Verify socat is running
                 time.sleep(0.5)
@@ -1307,58 +1280,40 @@ class SimpleGateway:
         time.sleep(1)  # Let socat stabilize
 
     def _stop_proxy(self, mac: str):
-        """Stop all socat proxies and remove IPv6 SNAT rules"""
+        """Stop all socat proxies and remove IPv4 SNAT rules"""
         self.logger.info("Stopping IPv6 proxies and cleaning up SNAT rules")
 
-        # Remove IPv6 SNAT rules first (if we have device info and firewall type)
-        if self.device and self.device.lan_ipv4 and self.ipv6_firewall_type:
+        # Remove IPv4 SNAT rules (socat translates IPv6→IPv4, so we use IPv4 iptables)
+        if self.device and self.device.lan_ipv4:
             lan_ip = self.device.lan_ipv4
 
             for device_port in cfg.IPV6_PROXY_PORTS.values():
                 try:
-                    if self.ipv6_firewall_type == "nftables":
-                        # Modern nftables removal
-                        subprocess.run(
-                            [
-                                cfg.CMD_NFT,
-                                "delete", "rule", "ip6", "nat", "POSTROUTING",
-                                "ip6", "daddr", lan_ip,
-                                "tcp", "dport", str(device_port),
-                                "snat", "to", cfg.LAN_GATEWAY_IP
-                            ],
-                            capture_output=True,
-                            timeout=2,
-                        )
-                        self.logger.info(
-                            f"Removed nftables SNAT rule for {lan_ip}:{device_port}"
-                        )
-
-                    elif self.ipv6_firewall_type == "ip6tables":
-                        # Legacy ip6tables removal
-                        subprocess.run(
-                            [
-                                cfg.CMD_IP6TABLES,
-                                "-t",
-                                "nat",
-                                "-D",
-                                "POSTROUTING",
-                                "-d",
-                                lan_ip,
-                                "-p",
-                                "tcp",
-                                "--dport",
-                                str(device_port),
-                                "-j",
-                                "SNAT",
-                                "--to-source",
-                                cfg.LAN_GATEWAY_IP,
-                            ],
-                            capture_output=True,
-                            timeout=2,
-                        )
-                        self.logger.info(
-                            f"Removed ip6tables SNAT rule for {lan_ip}:{device_port}"
-                        )
+                    # Remove IPv4 SNAT rule (not IPv6!)
+                    subprocess.run(
+                        [
+                            cfg.CMD_IPTABLES,
+                            "-t",
+                            "nat",
+                            "-D",
+                            "POSTROUTING",
+                            "-d",
+                            lan_ip,
+                            "-p",
+                            "tcp",
+                            "--dport",
+                            str(device_port),
+                            "-j",
+                            "SNAT",
+                            "--to-source",
+                            cfg.LAN_GATEWAY_IP,
+                        ],
+                        capture_output=True,
+                        timeout=2,
+                    )
+                    self.logger.info(
+                        f"Removed IPv4 SNAT rule for {lan_ip}:{device_port}"
+                    )
 
                 except Exception as e:
                     self.logger.debug(
@@ -1495,7 +1450,7 @@ class SimpleGateway:
     def _get_interface_ipv6(self, interface: str) -> Optional[str]:
         """
         Get primary global IPv6 address of interface (not link-local)
-        Returns the first non-link-local address found
+        Returns the first non-link-local address found (without /prefix)
         """
         try:
             result = subprocess.run(
@@ -1505,7 +1460,8 @@ class SimpleGateway:
                 check=True,
             )
             for line in result.stdout.splitlines():
-                match = re.search(r"inet6\s+([0-9a-f:]+)", line, re.I)
+                # Match IPv6 address and strip /prefix
+                match = re.search(r"inet6\s+([0-9a-f:]+)/\d+", line, re.I)
                 if match:
                     addr = match.group(1)
                     # Skip link-local (fe80::)
@@ -1518,7 +1474,7 @@ class SimpleGateway:
     def _get_all_interface_ipv6(self, interface: str) -> list:
         """
         Get ALL global IPv6 addresses of interface (not link-local)
-        Returns list of addresses (e.g., SLAAC, DHCPv6, privacy extensions)
+        Returns list of addresses without /prefix (e.g., SLAAC, DHCPv6, privacy extensions)
         """
         addresses = []
         try:
@@ -1529,7 +1485,8 @@ class SimpleGateway:
                 check=True,
             )
             for line in result.stdout.splitlines():
-                match = re.search(r"inet6\s+([0-9a-f:]+)", line, re.I)
+                # Match IPv6 address and strip /prefix
+                match = re.search(r"inet6\s+([0-9a-f:]+)/\d+", line, re.I)
                 if match:
                     addr = match.group(1)
                     # Skip link-local (fe80::) but include all global addresses
