@@ -16,10 +16,20 @@ LAN_INTERFACE = "eth1"  # Device side
 LAN_GATEWAY_IP = "192.168.1.1"
 
 # Logging
-LOG_FILE = "/tmp/ipv4-ipv6-gateway-test.log"  # Use /tmp for testing
+# Use /tmp for testing, /var/log for production
+LOG_FILE = (
+    "/tmp/ipv4-ipv6-gateway.log"
+    if os.environ.get("GATEWAY_TEST_MODE") == "1"
+    else "/var/log/ipv4-ipv6-gateway.log"
+)
 
 # State file (stores current device info)
-STATE_FILE = "/tmp/ipv4-ipv6-gateway-test/device.json"  # Use /tmp for testing
+# Use /tmp for testing, /etc for production
+STATE_FILE = (
+    "/tmp/ipv4-ipv6-gateway/device.json"
+    if os.environ.get("GATEWAY_TEST_MODE") == "1"
+    else "/etc/ipv4-ipv6-gateway/device.json"
+)
 
 # Check interval (seconds)
 CHECK_INTERVAL = 2  # Check for device/WAN changes every 2 seconds (fast detection!)
