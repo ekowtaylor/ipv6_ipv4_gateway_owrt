@@ -1015,12 +1015,44 @@ class SimpleGateway:
         """
         Check if IPv6 NAT is available on the system
 
-        Checks for both modern nftables (OpenWrt 22+) and legacy ip6tables
+        Checks for modern nftables fw4 table (OpenWrt 21+), legacy ip6 nat table,
+        and fallback to ip6tables (OpenWrt 19.07 and older)
 
         Returns:
             Tuple of (is_available, firewall_type) where firewall_type is "nftables" or "ip6tables"
         """
-        # First, try nftables (modern OpenWrt 22+)
+        # First, try modern nftables with fw4 table (OpenWrt 21+)
+        try:
+            # Check if fw4 table exists and has NAT capabilities
+            result = subprocess.run(
+                [cfg.CMD_NFT, "list", "table", "inet", "fw4"],
+                capture_output=True,
+                timeout=2,
+            )
+
+            if result.returncode == 0:
+                # fw4 table exists, check if nat_postrouting chain is available
+                result_chain = subprocess.run(
+                    [cfg.CMD_NFT, "list", "chain", "inet", "fw4", "nat_postrouting"],
+                    capture_output=True,
+                    timeout=2,
+                )
+                if result_chain.returncode == 0:
+                    self.logger.info("✓ IPv6 NAT support detected (nftables fw4 table)")
+                    return (True, "nftables")
+                else:
+                    # fw4 exists but no NAT chain - can still work via postrouting
+                    self.logger.info(
+                        "✓ nftables fw4 found (IPv6 NAT available via inet fw4)"
+                    )
+                    return (True, "nftables")
+
+        except FileNotFoundError:
+            self.logger.info("  nft command not found - trying legacy ip6 nat table")
+        except Exception as e:
+            self.logger.info(f"  fw4 table check failed: {e}")
+
+        # Fall back to legacy nftables ip6 nat table (OpenWrt 20-21)
         try:
             result = subprocess.run(
                 [cfg.CMD_NFT, "list", "table", "ip6", "nat"],
@@ -1029,14 +1061,13 @@ class SimpleGateway:
             )
 
             if result.returncode == 0:
-                self.logger.info("✓ IPv6 NAT support detected (nftables)")
+                self.logger.info("✓ IPv6 NAT support detected (nftables ip6 nat table)")
                 return (True, "nftables")
-            elif b"No such file or directory" in result.stderr:
-                # nftables exists but no ip6 nat table - need to create it
+            elif b"No such file or directory" in result.stderr or b"does not exist" in result.stderr:
+                # nftables exists but no ip6 nat table - try to create it
                 self.logger.info(
-                    "  nftables found, but ip6 nat table needs initialization"
+                    "  nftables found, but ip6 nat table missing - attempting to create"
                 )
-                # Try to create the table
                 try:
                     subprocess.run(
                         [cfg.CMD_NFT, "add", "table", "ip6", "nat"],
@@ -1066,7 +1097,7 @@ class SimpleGateway:
         except FileNotFoundError:
             self.logger.info("  nft command not found - trying legacy ip6tables")
         except Exception as e:
-            self.logger.info(f"  nftables check failed: {e}")
+            self.logger.info(f"  ip6 nat table check failed: {e}")
 
         # Fall back to legacy ip6tables (OpenWrt 19.07 and older)
         try:

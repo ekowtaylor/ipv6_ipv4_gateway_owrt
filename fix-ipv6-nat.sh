@@ -22,15 +22,22 @@ echo ""
 
 IPV6_NAT_WORKING=false
 
-# Try nftables first (modern)
+# Try modern nftables with fw4 table first (OpenWrt 21+)
 if command -v nft >/dev/null 2>&1; then
     echo "✓ nft command found"
-    if nft list table ip6 nat >/dev/null 2>&1; then
-        echo "✓ nftables IPv6 NAT is available"
+
+    # Check for fw4 table (modern OpenWrt)
+    if nft list table inet fw4 >/dev/null 2>&1; then
+        echo "✓ nftables fw4 table found (OpenWrt 21+)"
+        IPV6_NAT_WORKING=true
+        FIREWALL_TYPE="nftables-fw4"
+    # Fall back to legacy ip6 nat table (OpenWrt 20-21)
+    elif nft list table ip6 nat >/dev/null 2>&1; then
+        echo "✓ nftables ip6 nat table found (OpenWrt 20-21)"
         IPV6_NAT_WORKING=true
         FIREWALL_TYPE="nftables"
     else
-        echo "✗ nftables found but no ip6 nat table"
+        echo "✗ nftables found but no fw4 or ip6 nat table"
     fi
 else
     echo "✗ nft command not found"
@@ -147,8 +154,14 @@ IPV6_NAT_WORKING=false
 
 # Try nftables first
 if command -v nft >/dev/null 2>&1; then
-    if nft list table ip6 nat >/dev/null 2>&1; then
-        echo "✅ nftables IPv6 NAT is FUNCTIONAL"
+    # Check for fw4 table first (modern OpenWrt)
+    if nft list table inet fw4 >/dev/null 2>&1; then
+        echo "✅ nftables fw4 table is FUNCTIONAL"
+        IPV6_NAT_WORKING=true
+        FIREWALL_TYPE="nftables-fw4"
+    # Fall back to ip6 nat table
+    elif nft list table ip6 nat >/dev/null 2>&1; then
+        echo "✅ nftables ip6 nat table is FUNCTIONAL"
         IPV6_NAT_WORKING=true
         FIREWALL_TYPE="nftables"
     else
@@ -160,7 +173,7 @@ if command -v nft >/dev/null 2>&1; then
             echo "  ✓ Created POSTROUTING chain"
 
             if nft list table ip6 nat >/dev/null 2>&1; then
-                echo "✅ nftables IPv6 NAT is now FUNCTIONAL"
+                echo "✅ nftables ip6 nat table is now FUNCTIONAL"
                 IPV6_NAT_WORKING=true
                 FIREWALL_TYPE="nftables"
             fi
