@@ -95,13 +95,62 @@ class SimpleGateway:
         """Initialize gateway"""
         self.logger.info("Initializing Simple Gateway (Single Device Mode)")
 
-        # Store original WAN MAC
-        self.original_wan_mac = self._get_interface_mac(self.wan_interface)
-        if not self.original_wan_mac:
-            self.logger.error(f"Failed to get MAC for {self.wan_interface}")
-            return False
+        # Load original WAN MAC from saved file (if exists)
+        # This prevents reading a spoofed MAC if gateway crashed without cleanup
+        original_mac_file = os.path.join(cfg.CONFIG_DIR, "original_wan_mac.txt")
 
-        self.logger.info(f"Original WAN MAC: {self.original_wan_mac}")
+        if os.path.exists(original_mac_file):
+            try:
+                with open(original_mac_file, "r") as f:
+                    saved_mac = f.read().strip()
+                    if saved_mac:
+                        self.original_wan_mac = saved_mac.lower()
+                        self.logger.info(
+                            f"Original WAN MAC loaded from saved file: {self.original_wan_mac}"
+                        )
+                    else:
+                        raise ValueError("Empty MAC file")
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to read saved MAC file: {e} - reading from interface"
+                )
+                self.original_wan_mac = None
+        else:
+            self.logger.info(
+                "No saved MAC file found - reading current MAC from interface"
+            )
+            self.original_wan_mac = None
+
+        # Fallback: Read from interface if no saved MAC
+        if not self.original_wan_mac:
+            self.original_wan_mac = self._get_interface_mac(self.wan_interface)
+            if not self.original_wan_mac:
+                self.logger.error(f"Failed to get MAC for {self.wan_interface}")
+                return False
+
+            self.logger.warning(
+                f"Current WAN MAC: {self.original_wan_mac} (read from interface)"
+            )
+            self.logger.warning(
+                "⚠ WARNING: If gateway crashed previously, this MAC might be spoofed!"
+            )
+            self.logger.warning(
+                f"⚠ If incorrect, restore with: uci delete network.wan.macaddr && uci commit && ifup wan"
+            )
+
+            # Save this MAC to file for next time (CRITICAL for crash recovery!)
+            try:
+                os.makedirs(cfg.CONFIG_DIR, exist_ok=True)
+                with open(original_mac_file, "w") as f:
+                    f.write(self.original_wan_mac)
+                self.logger.info(
+                    f"Saved current MAC to {original_mac_file} for future restores"
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to save original MAC to file: {e}")
+                self.logger.error(
+                    "This means the gateway won't be able to restore MAC on crash!"
+                )
 
         # Load previous device state if exists
         self._load_state()
@@ -1367,13 +1416,17 @@ class SimpleGateway:
 
     def _wan_network_changed(self) -> bool:
         """
-        Check if WAN network has changed.
+        Check if WAN network has changed significantly.
 
         Returns True if:
         - IPv4 address changed
-        - IPv6 address changed
+        - IPv6 PRIMARY address changed (ignoring temporary/privacy extension addresses)
         - IPv4/IPv6 appeared when it was missing before
-        - IPv4/IPv6 disappeared
+        - IPv4/IPv6 disappeared completely
+
+        NOTE: IPv6 addresses can have multiple addresses (SLAAC, DHCPv6, privacy extensions).
+        We check if the current IPv6 is in the list of known addresses to avoid false positives
+        from address rotation.
         """
         if not self.device:
             return False
@@ -1381,6 +1434,7 @@ class SimpleGateway:
         # Get current WAN IPs
         current_ipv4 = self._get_interface_ipv4(self.wan_interface)
         current_ipv6 = self._get_interface_ipv6(self.wan_interface)
+        current_ipv6_all = self._get_all_interface_ipv6(self.wan_interface)
 
         changed = False
 
@@ -1400,17 +1454,48 @@ class SimpleGateway:
             self.logger.info(f"WAN IPv4 appeared: None → {current_ipv4}")
             changed = True
 
-        # IPv6 change detection
+        # IPv6 change detection - IMPROVED to handle multiple addresses
         if self.device.wan_ipv6:
             # We had IPv6 before
-            if current_ipv6 != self.device.wan_ipv6:
-                if current_ipv6:
-                    self.logger.warning(
-                        f"WAN IPv6 changed: {self.device.wan_ipv6} → {current_ipv6}"
-                    )
-                else:
-                    self.logger.warning(f"WAN IPv6 lost: {self.device.wan_ipv6} → None")
+            if not current_ipv6:
+                # IPv6 completely disappeared
+                self.logger.warning(
+                    f"WAN IPv6 lost completely: {self.device.wan_ipv6} → None"
+                )
                 changed = True
+            else:
+                # Check if current IPv6 is in our known addresses list
+                # This handles address rotation/privacy extensions
+                known_addresses = self.device.wan_ipv6_all or [self.device.wan_ipv6]
+
+                # If current primary IPv6 is NOT in our known list, it's a real change
+                if current_ipv6 not in known_addresses:
+                    # Also check if ANY of the current addresses are in our known list
+                    # This handles cases where priority changed but we still have old addresses
+                    overlap = set(current_ipv6_all) & set(known_addresses)
+
+                    if not overlap:
+                        # Complete address change - no overlap at all
+                        self.logger.warning(
+                            f"WAN IPv6 network changed: {self.device.wan_ipv6} → {current_ipv6}"
+                        )
+                        self.logger.info(
+                            f"  Known addresses: {', '.join(known_addresses)}"
+                        )
+                        self.logger.info(
+                            f"  Current addresses: {', '.join(current_ipv6_all)}"
+                        )
+                        changed = True
+                    else:
+                        # Just address rotation within the same prefix - ignore
+                        self.logger.debug(
+                            f"IPv6 address rotation detected (still have {len(overlap)} common addresses) - ignoring"
+                        )
+                else:
+                    # Current IPv6 is in our known list - no change
+                    self.logger.debug(
+                        f"IPv6 address {current_ipv6} is in known addresses - no change"
+                    )
         elif current_ipv6:
             # We didn't have IPv6 before, but now we do!
             self.logger.info(f"WAN IPv6 appeared: None → {current_ipv6}")
