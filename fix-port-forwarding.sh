@@ -20,9 +20,24 @@ echo "------------------------------"
 uci show firewall | grep "@zone\[1\]" | grep -E "(name|input|forward)"
 echo ""
 
+# Check and fix WAN zone forward policy
+echo "Checking WAN zone forward policy..."
+WAN_FORWARD=$(uci get firewall.@zone[1].forward 2>/dev/null)
+echo "  Current WAN forward policy: ${WAN_FORWARD:-NOT SET}"
+
+if [ "$WAN_FORWARD" = "REJECT" ]; then
+    echo "  ⚠ WAN forward is REJECT - this blocks port forwarding!"
+    echo "  Changing WAN forward policy to ACCEPT..."
+    uci set firewall.@zone[1].forward='ACCEPT'
+    echo "  ✓ WAN forward policy changed to ACCEPT"
+else
+    echo "  ✓ WAN forward policy is already ACCEPT (or not set)"
+fi
+echo ""
+
 # Check if WAN→LAN forwarding exists
 echo "Checking for existing WAN→LAN forwarding rule..."
-if uci show firewall | grep -q "src='wan'" | grep -q "dest='lan'"; then
+if uci show firewall | grep "forwarding" | grep -q "src='wan'" && uci show firewall | grep "forwarding" | grep -q "dest='lan'"; then
     echo "  WAN→LAN forwarding rule already exists"
 else
     echo "  No WAN→LAN forwarding rule found - adding it now..."

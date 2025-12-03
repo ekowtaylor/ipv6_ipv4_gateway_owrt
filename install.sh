@@ -443,7 +443,7 @@ SYSCTL_EOF
     uci set firewall.@zone[1].name='wan'
     uci set firewall.@zone[1].input='REJECT'
     uci set firewall.@zone[1].output='ACCEPT'
-    uci set firewall.@zone[1].forward='REJECT'
+    uci set firewall.@zone[1].forward='ACCEPT'
     uci set firewall.@zone[1].masq='1'
     uci set firewall.@zone[1].mtu_fix='1'
     uci set firewall.@zone[1].network='wan wan6'
