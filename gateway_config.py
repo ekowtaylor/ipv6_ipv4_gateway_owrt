@@ -10,6 +10,14 @@ from shutil import which
 # Service name
 SERVICE_NAME = "ipv4-ipv6-gateway"
 
+# Configuration directory
+# Use /tmp for testing, /etc for production
+CONFIG_DIR = (
+    "/tmp/ipv4-ipv6-gateway"
+    if os.environ.get("GATEWAY_TEST_MODE") == "1"
+    else "/etc/ipv4-ipv6-gateway"
+)
+
 # Network interfaces
 WAN_INTERFACE = "eth0"  # Network side
 LAN_INTERFACE = "eth1"  # Device side
@@ -109,8 +117,15 @@ def validate_config(skip_missing_commands=False) -> bool:
     Args:
         skip_missing_commands: If True, don't raise error for missing commands (for testing)
     """
-    # Create state directory
-    Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
+    # Create state directory (only if not in test mode or has permissions)
+    try:
+        Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        # In test mode on non-root systems, skip directory creation
+        if not skip_missing_commands:
+            raise  # Re-raise in production mode
+        # Silently ignore in test mode
+        pass
 
     # Resolve commands
     global CMD_IP, CMD_UDHCPC, CMD_ODHCP6C, CMD_IPTABLES, CMD_SOCAT

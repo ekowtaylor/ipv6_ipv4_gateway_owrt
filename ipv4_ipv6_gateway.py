@@ -185,7 +185,17 @@ class SimpleGateway:
             self.logger.warning("Continuing to main loop despite initial discovery error")
 
         try:
+            loop_count = 0
             while self.running:
+                loop_count += 1
+
+                # Log activity every 10 iterations to show gateway is alive
+                if loop_count % 10 == 0:
+                    self.logger.info(
+                        f"Gateway active - checked {loop_count} times "
+                        f"(Device: {'Yes' if self.device else 'No'})"
+                    )
+
                 # Check for device on LAN
                 device_info = self._discover_device()
 
