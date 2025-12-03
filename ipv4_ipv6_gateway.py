@@ -166,19 +166,23 @@ class SimpleGateway:
         # This detects devices already connected BEFORE service started
         self.logger.info("Running initial device discovery...")
 
-        # First, trigger ARP population by pinging the LAN subnet
-        # This ensures devices already connected (but idle) appear in ARP table
-        self._populate_arp_table()
+        try:
+            # First, trigger ARP population by pinging the LAN subnet
+            # This ensures devices already connected (but idle) appear in ARP table
+            self._populate_arp_table()
 
-        initial_device = self._discover_device()
-        if initial_device:
-            mac, lan_ip = initial_device
-            self.logger.info(f"Found device already connected: {mac} at {lan_ip}")
-            # Configure immediately (blocking, not threaded for first device)
-            self._configure_device(mac, lan_ip)
-        else:
-            self.logger.info("No devices found during initial discovery")
-            self.logger.info("Waiting for device to connect to eth1...")
+            initial_device = self._discover_device()
+            if initial_device:
+                mac, lan_ip = initial_device
+                self.logger.info(f"Found device already connected: {mac} at {lan_ip}")
+                # Configure immediately (blocking, not threaded for first device)
+                self._configure_device(mac, lan_ip)
+            else:
+                self.logger.info("No devices found during initial discovery")
+                self.logger.info("Waiting for device to connect to eth1...")
+        except Exception as e:
+            self.logger.error(f"Error during initial discovery: {e}", exc_info=True)
+            self.logger.warning("Continuing to main loop despite initial discovery error")
 
         try:
             while self.running:
