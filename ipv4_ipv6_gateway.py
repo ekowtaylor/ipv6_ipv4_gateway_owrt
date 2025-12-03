@@ -88,6 +88,9 @@ class SimpleGateway:
         self.wan_link_up: Optional[bool] = None
         self.lan_link_up: Optional[bool] = None
 
+        # Track if reconfiguration is in progress to prevent loops
+        self.reconfiguration_in_progress = False
+
     def initialize(self) -> bool:
         """Initialize gateway"""
         self.logger.info("Initializing Simple Gateway (Single Device Mode)")
@@ -179,15 +182,19 @@ class SimpleGateway:
                     self.device
                     and self.device.status == "configured"
                     and cfg.MONITOR_WAN_CHANGES
+                    and not self.reconfiguration_in_progress
                 ):
                     if self._wan_network_changed():
                         self.logger.warning(
                             "WAN network changed - reconfiguring device (fast mode)"
                         )
+                        # Mark reconfiguration as in progress to prevent loop
+                        self.reconfiguration_in_progress = True
+
                         # Use threading to avoid blocking the main loop
                         # Use fast_reconfig=True since MAC is already registered
                         reconfig_thread = threading.Thread(
-                            target=self._configure_device,
+                            target=self._configure_device_with_lock,
                             args=(self.device.mac_address, self.device.lan_ipv4, True),
                             daemon=True,
                         )
@@ -327,6 +334,25 @@ class SimpleGateway:
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to get ARP entries: {e}")
             return None
+
+    def _configure_device_with_lock(self, mac: str, lan_ip: str, fast_reconfig: bool = False):
+        """
+        Wrapper for _configure_device that manages the reconfiguration lock.
+
+        This ensures the reconfiguration_in_progress flag is cleared when done,
+        preventing the WAN detection loop.
+
+        Args:
+            mac: Device MAC address
+            lan_ip: Device LAN IP
+            fast_reconfig: If True, use faster timeouts (MAC already registered)
+        """
+        try:
+            self._configure_device(mac, lan_ip, fast_reconfig)
+        finally:
+            # Always clear the lock when done (even if configuration failed)
+            self.reconfiguration_in_progress = False
+            self.logger.debug("Reconfiguration lock released")
 
     def _configure_device(self, mac: str, lan_ip: str, fast_reconfig: bool = False):
         """
