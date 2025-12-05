@@ -649,16 +649,62 @@ class SimpleGateway:
             self.logger.info(f"Waiting {wait_time}s for link negotiation and RAs...")
             time.sleep(wait_time)
 
-            # Verify MAC was set correctly
-            current_mac = self._get_interface_mac(self.wan_interface)
-            if current_mac and current_mac.lower() == mac.lower():
-                self.logger.info(f"MAC spoofing successful: {current_mac}")
-                return True
-            else:
-                self.logger.error(
-                    f"MAC spoofing failed: expected {mac}, got {current_mac}"
-                )
-                return False
+            # Verify MAC was set correctly (with retries for netifd timing issues)
+            current_mac = None
+            max_retries = 3
+            for verify_attempt in range(max_retries):
+                current_mac = self._get_interface_mac(self.wan_interface)
+
+                if current_mac and current_mac.lower() == mac.lower():
+                    self.logger.info(
+                        f"✓ MAC spoofing successful: {current_mac}"
+                    )
+                    return True
+
+                if verify_attempt < max_retries - 1:
+                    self.logger.warning(
+                        f"MAC verification attempt {verify_attempt + 1}/{max_retries} failed: "
+                        f"expected {mac}, got {current_mac} - retrying..."
+                    )
+                    self.logger.info("  Attempting direct MAC setting as fallback...")
+
+                    # Try alternate MAC setting method (direct ip link set)
+                    try:
+                        subprocess.run(
+                            [cfg.CMD_IP, "link", "set", self.wan_interface, "down"],
+                            capture_output=True,
+                            timeout=2,
+                        )
+                        subprocess.run(
+                            [
+                                cfg.CMD_IP,
+                                "link",
+                                "set",
+                                self.wan_interface,
+                                "address",
+                                mac,
+                            ],
+                            capture_output=True,
+                            timeout=2,
+                        )
+                        subprocess.run(
+                            [cfg.CMD_IP, "link", "set", self.wan_interface, "up"],
+                            capture_output=True,
+                            timeout=2,
+                        )
+                        self.logger.info("  ✓ Applied MAC directly via ip link set")
+                        time.sleep(2)  # Wait for link negotiation
+                    except subprocess.CalledProcessError as e:
+                        self.logger.warning(
+                            f"  Direct MAC setting failed: {e} - continuing..."
+                        )
+
+            # Final verification after all retries
+            self.logger.error(
+                f"MAC spoofing failed after {max_retries} attempts: "
+                f"expected {mac}, got {current_mac}"
+            )
+            return False
 
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to spoof MAC: {e}")

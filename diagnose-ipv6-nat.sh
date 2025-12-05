@@ -45,15 +45,25 @@ echo ""
 
 # Try nftables
 echo "6. Testing nftables (modern):"
-if nft list table ip6 nat >/dev/null 2>&1; then
-    echo "   ✓ nftables ip6 nat table exists"
+if nft list table inet fw4 >/dev/null 2>&1; then
+    echo "   ✓ nftables fw4 table exists (OpenWrt 21+)"
+    echo "   Firewall type: inet fw4 (modern fw4-based firewall)"
+    echo ""
+    echo "   Checking for NAT chains..."
+    if nft list chain inet fw4 nat_postrouting >/dev/null 2>&1; then
+        echo "   ✓ nat_postrouting chain found"
+    else
+        echo "   ⚠ fw4 table exists but nat_postrouting may not be configured"
+    fi
+elif nft list table ip6 nat >/dev/null 2>&1; then
+    echo "   ✓ nftables ip6 nat table exists (OpenWrt 20-21)"
     nft list table ip6 nat | head -20
-elif nft list tables 2>/dev/null | grep -q "ip6"; then
-    echo "   ⚠ nftables works but ip6 nat table missing"
+elif nft list tables 2>/dev/null | grep -q "ip6\|inet"; then
+    echo "   ⚠ nftables works but no IPv6 NAT table found"
     echo "   Available tables:"
     nft list tables
 else
-    echo "   ✗ nftables not working"
+    echo "   ✗ nftables not working or no IPv6 NAT available"
     nft list tables 2>&1
 fi
 echo ""
